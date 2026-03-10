@@ -5,6 +5,8 @@ import type { DepthGrade, RosterAnalysis } from './rosterConstruction';
 import { analyseRoster } from './rosterConstruction';
 import { getPlayerValue } from '../hooks/usePlayerValues';
 import { computeRecommendation } from './recommendations';
+import { buildRookiePickValueMap } from './draftPicks';
+import { buildRookieRankings } from './rookieDraft';
 
 // --- Types ---
 
@@ -42,6 +44,8 @@ export interface TradeRecommendation {
   beforeGrades: PositionalGradeSnapshot[];
   afterGrades: PositionalGradeSnapshot[];
   improvementScore: number;
+  acceptabilityScore: number;
+  otherTeamImpact: { beforeGrades: PositionalGradeSnapshot[]; afterGrades: PositionalGradeSnapshot[] };
   explanation: string;
 }
 
@@ -136,12 +140,65 @@ function simulateRoster(
   return { ...roster, players: newPlayers };
 }
 
-function estimatePickReturn(playerValue: number): { description: string; value: number } {
-  if (playerValue >= 5500) return { description: '1st round pick', value: 5500 };
-  if (playerValue >= 3200) return { description: '2nd round pick', value: 3200 };
-  if (playerValue >= 2000) return { description: '3rd round pick', value: 2000 };
-  if (playerValue >= 1200) return { description: '4th round pick', value: 1200 };
-  return { description: 'late-round pick', value: 350 };
+function estimatePickRange(
+  playerValue: number,
+  rookieValueMap: Map<number, number>,
+  totalTeams: number,
+): { description: string; value: number } {
+  // If no rookie values available, fall back to generic round labels
+  if (rookieValueMap.size === 0) {
+    if (playerValue >= 5500) return { description: '1st round pick', value: 5500 };
+    if (playerValue >= 3200) return { description: '2nd round pick', value: 3200 };
+    if (playerValue >= 2000) return { description: '3rd round pick', value: 2000 };
+    if (playerValue >= 1200) return { description: '4th round pick', value: 1200 };
+    return { description: 'late-round pick', value: 350 };
+  }
+
+  // Find the range of picks whose rookie values bracket the player value
+  // rookieValueMap: overall pick number -> rookie trade value (sorted by rank/pick)
+  const entries = Array.from(rookieValueMap.entries()).sort((a, b) => a[0] - b[0]);
+
+  // Find the closest pick
+  let closestPick = 1;
+  let closestDiff = Infinity;
+  for (const [pickNum, rookieVal] of entries) {
+    const diff = Math.abs(rookieVal - playerValue);
+    if (diff < closestDiff) {
+      closestDiff = diff;
+      closestPick = pickNum;
+    }
+  }
+
+  // Build a range of ±2 picks around the closest
+  const rangeLow = Math.max(1, closestPick - 2);
+  const rangeHigh = Math.min(entries.length, closestPick + 2);
+
+  // Convert overall pick numbers to round.pick format
+  const formatPick = (overall: number) => {
+    const round = Math.ceil(overall / totalTeams);
+    const pickInRound = ((overall - 1) % totalTeams) + 1;
+    return `${round}.${String(pickInRound).padStart(2, '0')}`;
+  };
+
+  const lowRound = Math.ceil(rangeLow / totalTeams);
+  const highRound = Math.ceil(rangeHigh / totalTeams);
+
+  // Determine tier label
+  const pickInRound = ((closestPick - 1) % totalTeams) + 1;
+  const thirdOfTeams = Math.ceil(totalTeams / 3);
+  let tier: string;
+  if (pickInRound <= thirdOfTeams) tier = 'Early';
+  else if (pickInRound <= thirdOfTeams * 2) tier = 'Mid';
+  else tier = 'Late';
+
+  const roundLabel = lowRound === highRound
+    ? `${tier} Round ${lowRound}`
+    : `Round ${lowRound}–${highRound}`;
+
+  const description = `${roundLabel} (${formatPick(rangeLow)}–${formatPick(rangeHigh)})`;
+  const closestValue = rookieValueMap.get(closestPick) ?? playerValue;
+
+  return { description, value: Math.round(closestValue) };
 }
 
 function computeDiffPct(giveTotal: number, receiveTotal: number): number {
@@ -495,6 +552,43 @@ function collectTradablePlayers(
   return tradable;
 }
 
+// --- Acceptability scoring (other team's perspective) ---
+
+function computeAcceptability(
+  targetTeamProfile: TeamProfile | undefined,
+  givePlayerIds: string[],    // what my team gives (target team receives)
+  receivePlayerIds: string[],  // what my team receives (target team loses)
+  rosters: SleeperRoster[],
+  values: ValuesResponse,
+  players: Record<string, any>,
+  rosterPositions: string[],
+): { score: number; beforeGrades: PositionalGradeSnapshot[]; afterGrades: PositionalGradeSnapshot[] } {
+  if (!targetTeamProfile) {
+    return { score: 0, beforeGrades: [], afterGrades: [] };
+  }
+
+  const theirBeforeAnalysis = analyseRoster(targetTeamProfile.roster, rosters, values, players, rosterPositions);
+  const theirBeforeGrades = snapshotGrades(theirBeforeAnalysis);
+
+  // Simulate: target team loses receivePlayerIds, gains givePlayerIds
+  const theirSimRoster = simulateRoster(targetTeamProfile.roster, receivePlayerIds, givePlayerIds);
+  const theirAfterAnalysis = analyseRoster(theirSimRoster, rosters, values, players, rosterPositions);
+  const theirAfterGrades = snapshotGrades(theirAfterAnalysis);
+
+  // Score: net grade changes + net value changes
+  let netGradeChange = 0;
+  let netValueChange = 0;
+  for (let i = 0; i < theirAfterGrades.length; i++) {
+    const before = theirBeforeGrades[i];
+    const after = theirAfterGrades[i];
+    netGradeChange += gradeNumeric(after.grade) - gradeNumeric(before.grade);
+    netValueChange += after.totalValue - before.totalValue;
+  }
+
+  const score = netGradeChange * 1000 + netValueChange / 10;
+  return { score, beforeGrades: theirBeforeGrades, afterGrades: theirAfterGrades };
+}
+
 // --- Build a single trade recommendation ---
 
 function buildRecommendation(
@@ -582,6 +676,11 @@ function buildRecommendation(
     })),
   ];
 
+  // Compute acceptability from the other team's perspective
+  const acceptability = computeAcceptability(
+    targetTeamProfile, giveIds, receiveIds, rosters, values, players, rosterPositions,
+  );
+
   return {
     targetPlayer: {
       id: target.id,
@@ -612,6 +711,8 @@ function buildRecommendation(
     beforeGrades,
     afterGrades,
     improvementScore,
+    acceptabilityScore: acceptability.score,
+    otherTeamImpact: { beforeGrades: acceptability.beforeGrades, afterGrades: acceptability.afterGrades },
     explanation,
   };
 }
@@ -704,6 +805,11 @@ function buildRebuilderTradeRecommendations(
             ? ` (past ${sellPlayer.position} prime at age ${sellPlayer.age})`
             : '';
 
+          // Acceptability: contender loses youngP, gains sellPlayer
+          const acceptability = computeAcceptability(
+            contenderProfile, [sellPlayer.id], [youngP.id], rosters, values, players, rosterPositions,
+          );
+
           recommendations.push({
             targetPlayer: {
               id: youngP.id, name: youngP.name, position: youngP.position,
@@ -729,6 +835,8 @@ function buildRebuilderTradeRecommendations(
             beforeGrades,
             afterGrades,
             improvementScore: youngP.value / 10 + (youngP.age !== null && youngP.age <= 24 ? 500 : 0),
+            acceptabilityScore: acceptability.score,
+            otherTeamImpact: { beforeGrades: acceptability.beforeGrades, afterGrades: acceptability.afterGrades },
             explanation: `Sell high on ${sellPlayer.name}${ageNote} to ${contenderProfile.teamName} who needs ${sellPlayer.position} help. ` +
               `Receive ${youngP.name} (age ${youngP.age ?? '?'}) to build around (${fairnessLabel(pct)} trade).`,
           });
@@ -756,6 +864,11 @@ function buildRebuilderTradeRecommendations(
                 ? ` (past ${sellPlayer.position} prime at age ${sellPlayer.age})`
                 : '';
 
+              // Acceptability: contender loses p1+p2, gains sellPlayer
+              const acceptability2 = computeAcceptability(
+                contenderProfile, [sellPlayer.id], [p1.id, p2.id], rosters, values, players, rosterPositions,
+              );
+
               recommendations.push({
                 targetPlayer: {
                   id: p1.id, name: p1.name, position: p1.position,
@@ -781,6 +894,8 @@ function buildRebuilderTradeRecommendations(
                 beforeGrades,
                 afterGrades,
                 improvementScore: total / 10 + (p1.age !== null && p1.age <= 24 ? 300 : 0) + (p2.age !== null && p2.age <= 24 ? 300 : 0),
+                acceptabilityScore: acceptability2.score,
+                otherTeamImpact: { beforeGrades: acceptability2.beforeGrades, afterGrades: acceptability2.afterGrades },
                 explanation: `Sell high on ${sellPlayer.name}${ageNote} to ${contenderProfile.teamName}. ` +
                   `Receive ${p1.name} + ${p2.name} — young pieces to build around (${fairnessLabel(pct)} trade).`,
               });
@@ -808,6 +923,7 @@ function buildRebuilderPickSuggestions(
   values: ValuesResponse,
   players: Record<string, any>,
   leagueSize: number,
+  rookieValueMap: Map<number, number>,
 ): RebuilderPickSuggestion[] {
   const suggestions: RebuilderPickSuggestion[] = [];
   const positions = ['QB', 'RB', 'WR', 'TE'] as const;
@@ -834,7 +950,7 @@ function buildRebuilderPickSuggestions(
       });
 
       if (rec.action === 'Trade' || rec.action === 'Sell') {
-        const pickReturn = estimatePickReturn(p.value);
+        const pickReturn = estimatePickRange(p.value, rookieValueMap, leagueSize);
         const decline = POS_DECLINE_AGE[p.position] ?? 30;
         const ageNote = p.age !== null && p.age >= decline
           ? ` at age ${p.age} (past ${p.position} prime)`
@@ -918,10 +1034,13 @@ export function findTradeTargets(
   // --- Collect tradable players ---
   const tradablePlayers = collectTradablePlayers(myProfile, beforeAnalysis);
 
+  // --- Build rookie value map for pick range estimation ---
+  const rookieValueMap = buildRookiePickValueMap(buildRookieRankings(players, values));
+
   // --- Rebuilder pick suggestions (always computed for rebuilders) ---
   const rebuilderPickSuggestions: RebuilderPickSuggestion[] = [];
   if (myProfile.tier === 'Rebuilder') {
-    rebuilderPickSuggestions.push(...buildRebuilderPickSuggestions(myProfile, values, players, rosters.length));
+    rebuilderPickSuggestions.push(...buildRebuilderPickSuggestions(myProfile, values, players, rosters.length, rookieValueMap));
   }
 
   // --- Find trade recommendations ---
@@ -986,7 +1105,12 @@ export function findTradeTargets(
   }
 
   // --- Sort and limit ---
-  recommendations.sort((a, b) => b.improvementScore - a.improvementScore);
+  // Primary: acceptability (how likely the other team accepts), tiebreaker: improvement to your roster
+  recommendations.sort((a, b) => {
+    const acceptDiff = b.acceptabilityScore - a.acceptabilityScore;
+    if (Math.abs(acceptDiff) > 50) return acceptDiff;
+    return b.improvementScore - a.improvementScore;
+  });
 
   // Keep top 4 per position, max 12 total
   const kept: TradeRecommendation[] = [];

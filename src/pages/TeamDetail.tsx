@@ -478,7 +478,7 @@ function RosterAnalysisCard({
             <p className="text-xs text-gray-400 dark:text-gray-500 uppercase tracking-wide font-medium">
               Trade Targets
             </p>
-            <Link to={`/league/${leagueId}/trades`} className="text-xs text-blue-600 dark:text-blue-400 hover:underline">
+            <Link to={`/league/${leagueId}/trades?tab=targets&team=${roster.roster_id}`} className="text-xs text-blue-600 dark:text-blue-400 hover:underline">
               View all in Trade Tools →
             </Link>
           </div>
@@ -546,10 +546,11 @@ function CompactTradeTargetCard({ rec, leagueId }: { rec: TradeRecommendation; l
         </Link>
         <span className="text-xs text-gray-400 dark:text-gray-500">{formatVal(rec.targetPlayer.value)}</span>
         <span className={`text-xs rounded px-1.5 py-0.5 ml-auto ${
-          rec.fairnessGrade === 'Even' ? 'bg-green-100 text-green-700 dark:bg-green-900/40 dark:text-green-400' :
-          'bg-yellow-100 text-yellow-700 dark:bg-yellow-900/40 dark:text-yellow-400'
+          rec.acceptabilityScore > 500 ? 'bg-green-100 text-green-700 dark:bg-green-900/40 dark:text-green-400' :
+          rec.acceptabilityScore > 0 ? 'bg-yellow-100 text-yellow-700 dark:bg-yellow-900/40 dark:text-yellow-400' :
+          'bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-400'
         }`}>
-          {rec.fairnessGrade}
+          {rec.acceptabilityScore > 500 ? 'Likely' : rec.acceptabilityScore > 0 ? 'Possible' : 'Unlikely'}
         </span>
       </div>
       <div className="flex items-center gap-2 text-xs text-gray-500 dark:text-gray-400 mb-1">
