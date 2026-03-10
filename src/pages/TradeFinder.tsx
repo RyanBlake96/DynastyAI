@@ -711,7 +711,7 @@ function BeforeAfterGrid({ before, after, targetPosition }: {
               {/* Depth grade — secondary, only when different from starter change */}
               {depthChanged && (
                 <div className="flex items-center justify-center gap-1 mt-1 opacity-60">
-                  <span className="text-[10px]">{bg.depthGrade} → {ag.depthGrade}</span>
+                  <span className="text-[10px] text-gray-500 dark:text-gray-400">{bg.depthGrade} → {ag.depthGrade}</span>
                 </div>
               )}
             </div>

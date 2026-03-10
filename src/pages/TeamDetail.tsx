@@ -633,7 +633,7 @@ function CompactTradeTargetCard({ rec, leagueId }: { rec: TradeRecommendation; l
                     )}
                   </div>
                   {depthChanged && depthChanged !== starterChanged && (
-                    <p className="text-[10px] text-gray-400 mt-0.5 opacity-60">{bg.depthGrade[0]}→{ag.depthGrade[0]}</p>
+                    <p className="text-[10px] text-gray-400 dark:text-gray-500 mt-0.5">{bg.depthGrade[0]}→{ag.depthGrade[0]}</p>
                   )}
                 </div>
               );
