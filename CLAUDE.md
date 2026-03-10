@@ -12,6 +12,7 @@ A web-based tool that helps dynasty fantasy football managers analyse their Slee
 - Sell window alerts for players at peak value
 - Mutually beneficial trade finder with explanations
 - Trade targets — personalised player acquisition targets with acceptability scoring
+- Positional power rankings (Dashboard view ranking teams by starter quality per position)
 - Manual trade evaluator
 - Player pages with form (using league scoring), news, and league context
 - Trade history analysis with value grades
@@ -722,6 +723,40 @@ Factors: player age + trajectory, team tier, positional need, injury history, co
 - None
 **Tomorrow:** Phase 6 (in-season features) or Phase 7 (polish & launch)
 
+### Day 18 — 2026-03-10
+**Status:** Complete
+**Completed:**
+- Split roster grading into Starter Grades + Depth Grades (branch `feat/starter-depth-grades`, PR #4):
+  - `PositionalGrade` extended with `starterGrade` (percentile-based) and `depthGrade` (total-value-based) fields
+  - `RosterAnalysis` extended with `overallStarterGrade`
+  - New `computeLeagueStarterValues()` helper precomputes league-wide starter values once, passed through to all `analyseRoster()` calls for performance
+  - `gradeByPercentile()` ranks starter values: top 33% = Strong, middle = Adequate, bottom = Weak
+  - `computeOptimalStarters()` exported from powerRankings.ts for reuse
+  - QB starter simplification: `countQbStarterSlots()` counts QB + SUPER_FLEX slots, top N QBs by value used as starters (exported for reuse)
+  - TeamDetail shows two grade rows per position: prominent starter bar + subdued depth bar
+  - TradeFinder `BeforeAfterGrid` shows starter grades prominently, depth only when different
+- Updated trade analysis to focus on starter grades (tradeTargets.ts):
+  - `computeAcceptability()` uses starter grade delta (2x weight) + depth grade delta (1x weight)
+  - `buildRecommendation()` scoring: `starterGradeImprovement * 1500 + depthGradeImprovement * 500`
+  - Need detection uses `starterGrade` and `starterValue`
+  - `PositionalGradeSnapshot` extended with `starterValue`, `starterGrade`, `depthGrade`
+- Fixed dark mode visibility in trade targets roster impact section (branch `fix/dark-mode-roster-impact`, PR #5):
+  - Added missing `dark:` text color to depth grade change text in `BeforeAfterGrid`
+  - Fixed `CompactTradeTargetCard` depth grade text for dark mode readability
+- Built Positional Power Rankings Dashboard view (branch `feat/positional-power-rankings`, PR #6):
+  - Third view tab on Dashboard alongside Power Rankings and Standings
+  - Position tabs (QB/RB/WR/TE) with color-coded styling matching positional color scheme
+  - Teams ranked by average starter value at selected position
+  - Each team card: rank, team name, starter grade badge, competitive tier, relative value bar
+  - Starters section: clickable player chips with name, NFL team, age, trade value
+  - Bench section: subdued depth players with values
+  - Starter grades by league-wide percentile
+  - QB starters: top N by value (N = QB + SF slots); TE starters: top 1 by value; RB/WR: from optimal lineup algorithm
+- Deployed all changes to production: https://dynasty-ai.vercel.app
+**Issues:**
+- None
+**Tomorrow:** Phase 6 (in-season features) or Phase 7 (polish & launch)
+
 <!--
   UPDATE THIS LOG AT THE END OF EVERY SESSION.
   Copy the template below for each new day:
@@ -810,7 +845,7 @@ Factors: player age + trajectory, team tier, positional need, injury history, co
 - Cron function fetches Sleeper player DB directly from api.sleeper.app (not our proxy) to build name map — runs server-side only
 - App LeagueType uses `'superflex'` but API expects `'sf'` — mapped in `fetchPlayerValues()`
 - Power rankings use averaged values across all available sources per player; sources with 0/missing values are excluded from the average
-- Dashboard defaults to Power Rankings view; Standings view is accessible via toggle
+- Dashboard has three view modes: Power Rankings (default), Positional Rankings, and Standings — toggled via pill buttons
 - Vercel build runs `tsc -b` which enforces noUnusedLocals — stricter than `tsc --noEmit` alone; always run `npm run build` locally before deploying
 - Competitive tier algorithm: weighted composite score (0-100) from starter value percentile (60%), youth bonus (15%, peaks at age 24, zero at 30+), win percentage (15%), bench depth ratio (10%, healthy = 20-45% of value on bench). Thresholds: Strong Contender ≥79, Contender ≥60, Fringe Playoff ≥50, Rebuilder <50. Max 4 per tier with overflow bump-down. Tunable in `assignTiers()` in src/utils/powerRankings.ts.
 - Tier badge colours: Strong Contender = green, Contender = blue, Fringe Playoff = yellow, Rebuilder = red
@@ -820,7 +855,7 @@ Factors: player age + trajectory, team tier, positional need, injury history, co
 - Hold/trade/sell recommendation scoring: positive = hold, negative = sell. Factors: age trajectory (position-specific), team tier alignment, positional surplus, value divergence across sources, league positional rank, IR status. Thresholds: Strong Hold ≥3, Hold ≥1, Trade ≥-1, Sell <-1.
 - Sell window alerts trigger on: RB 28+ with avgValue ≥2000, any position at decline age with avgValue ≥3000, final peak year with avgValue ≥4000, large value spread (max > min × 1.5) with avgValue ≥2000
 - Position decline ages: QB=33, RB=27, WR=29, TE=29. Peak ranges: QB=[26,32], RB=[23,26], WR=[24,28], TE=[25,28]
-- Roster construction grading: positional depth grades (Strong/Adequate/Weak) based on ≥120%/≥80%/<80% of league-wide average value at each position. Overall grade: Strong = 0 weak + 2+ strong, Weak = 2+ weak, Adequate = everything else
+- Roster construction grading: dual system — `starterGrade` (percentile rank of starter value vs league) + `depthGrade` (total positional value vs league average at ≥120%/≥80%/<80% thresholds). Overall grades: `overallStarterGrade` and `overallGrade` (depth). Rollup: Strong = 0 weak + 2+ strong, Weak = 2+ weak, Adequate = everything else
 - Format notes utility detects: TE premium (bonus_rec_te > 0), PPR variants (rec=0/0.5/1), Superflex, deep rosters (≥30), shallow rosters (≤18), taxi squad, multiple flex slots (≥3), IDP
 - Value normalisation: min-max normalisation per source to 0–10,000 scale. `normalizeValues.ts` computes stats (min/max) per source, then `normalize()` maps each raw value to the common scale. Average of normalised values across available sources = the player's Dynasty AI value. Normalisation stats cached at module level alongside raw values.
 - Landing page rankings: `useMemo` iterates all player IDs across all three value sources, filters to QB/RB/WR/TE, computes normalised value via `getPlayerValue()`, sorts descending, displays top 100. Defaults to Superflex; 1QB toggle available. Position filter tabs (All/QB/RB/WR/TE).
@@ -861,3 +896,8 @@ Factors: player age + trajectory, team tier, positional need, injury history, co
 - Acceptability badge thresholds: "Likely Accept" (green) if score > 500, "Possible" (yellow) if score > 0, "Unlikely" (red) if score ≤ 0. Trades sorted by acceptability (primary) then improvement score (tiebreaker).
 - Trade Targets deep linking: TeamDetail "View all in Trade Tools →" links to `/league/${leagueId}/trades?tab=targets&team=${roster.roster_id}`. TradeFinder reads `tab` and `team` from `useSearchParams()` on mount to initialize view and selected team. `TradeTargetsView` accepts `initialTeam` prop.
 - Trade Tools page now has four tabs: Trade Finder, Trade Evaluator (links to separate page), Trade History, Trade Targets. Player search bar filters recommendations by player name across all tabs.
+- Roster grading dual system: `starterGrade` (percentile-based: how starters rank vs other teams' starters) and `depthGrade` (total-value-based: total positional value vs league average at ≥120%/≥80%/<80% thresholds). Both live on `PositionalGrade`. `grade` field is a backward-compat alias for `depthGrade`.
+- `computeLeagueStarterValues()` in rosterConstruction.ts precomputes league-wide starter values per position (one entry per team). Called once and passed as optional param to `analyseRoster()` to avoid redundant `computeOptimalStarters()` calls (N rosters × M positions).
+- `countQbStarterSlots()` exported from rosterConstruction.ts: counts QB + SUPER_FLEX slots in `roster_positions`. Returns at least 1. Used for QB starter determination in both roster analysis and positional rankings.
+- Positional Rankings Dashboard view: `PositionalRankingsView` component in Dashboard.tsx. Computes optimal starters per roster, groups players by position, ranks teams by average starter value. QB uses top N by value (N = qbSlots), TE uses top 1, RB/WR use optimal lineup algorithm. Starter grades by percentile (top 33% Strong, middle Adequate, bottom Weak).
+- Trade analysis starter focus: `computeAcceptability()` weights starter grade delta 2x, depth grade delta 1x. `buildRecommendation()` scores `starterGradeImprovement * 1500 + depthGradeImprovement * 500 + starterValueGain / 10`. Need detection uses `starterGrade` for weak/adequate classification.
