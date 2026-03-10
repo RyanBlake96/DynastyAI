@@ -11,6 +11,7 @@ A web-based tool that helps dynasty fantasy football managers analyse their Slee
 - Hold/trade/sell advice per player, tailored to team window
 - Sell window alerts for players at peak value
 - Mutually beneficial trade finder with explanations
+- Trade targets — personalised player acquisition targets with acceptability scoring
 - Manual trade evaluator
 - Player pages with form (using league scoring), news, and league context
 - Trade history analysis with value grades
@@ -682,6 +683,45 @@ Factors: player age + trajectory, team tier, positional need, injury history, co
 - Production deploy pending
 **Tomorrow:** Deploy to production, Phase 6 or Phase 7
 
+### Day 17 — 2026-03-10
+**Status:** Complete
+**Completed:**
+- Built player search filter for Trade Tools page (branch `feat/player-search-trade-tools`):
+  - Search bar above trade recommendations to filter by player name
+  - "Who Should I Trade For?" feature — type a player name to see which teams have them and potential trade packages
+  - Merged via PR #1
+- Built Trade Targets feature (src/utils/tradeTargets.ts):
+  - New algorithm separate from Trade Finder — analyses team needs, finds specific player targets on other rosters
+  - Builds team profiles with positional grades, surplus/need detection
+  - Contender mode: targets players at weak positions from teams with surplus
+  - Rebuilder mode: identifies sell candidates, finds young player swaps from contenders, suggests pick returns
+  - Trade package construction: balances value with counter-balance players from target team
+  - Improvement scoring based on positional grade changes
+  - Added as fourth tab "Trade Targets" in Trade Tools page
+  - TeamDetail shows top 3 compact trade target cards per team
+- Fixed trade targets algorithm (branch `fix/trade-targets-algorithm`, PR #2):
+  - All-Strong teams now get suggestions (falls back to "maintain depth" needs when no Weak positions)
+  - Weak-position teams get trades (lowered surplus threshold, expanded candidate search)
+  - Better trade balance (MAX_DIFF_PCT increased to 35%, counter-balance logic improved)
+  - Minimum 3 recommendations per team (multiple needs searched)
+  - Rebuilders get actual trade packages (not just pick suggestions)
+- Polished trade targets UX (branch `polish/trade-targets-ux`, PR #3):
+  - Rebuilder sell suggestions show specific pick ranges from upcoming draft (e.g. "Early Round 1 (1.01–1.05)") using rookie draft values via `buildRookiePickValueMap()`
+  - TeamDetail "View all in Trade Tools →" deep-links to Trade Targets tab with team pre-selected via URL search params (`?tab=targets&team={rosterId}`)
+  - Acceptability scoring: `computeAcceptability()` simulates trade from other team's perspective using `analyseRoster()` on their modified roster
+  - Acceptability badges: "Likely Accept" (green, score > 500), "Possible" (yellow, score > 0), "Unlikely" (red, score ≤ 0)
+  - Trades sorted by acceptability (primary) then improvement score (tiebreaker)
+  - Other team's before/after grade grid shown in expandable roster impact section
+- Added acceptability reasons to trade recommendations:
+  - `computeAcceptability()` now returns detailed `reasons[]` explaining the score
+  - Reasons include: positional grade upgrades/downgrades, tier-context (contenders: filling weaknesses, depth to spare; rebuilders: young assets, aging players), net value impact
+  - TradeFinder shows color-coded reasons panel with "Why they'd accept/might consider/likely decline" header
+  - TeamDetail compact card shows up to 3 bullet-point reasons in expandable details
+- Deployed all changes to production: https://dynasty-ai.vercel.app
+**Issues:**
+- None
+**Tomorrow:** Phase 6 (in-season features) or Phase 7 (polish & launch)
+
 <!--
   UPDATE THIS LOG AT THE END OF EVERY SESSION.
   Copy the template below for each new day:
@@ -811,3 +851,13 @@ Factors: player age + trajectory, team tier, positional need, injury history, co
 - Rookie Draft page (src/pages/RookieDraft.tsx): two-tab interface (Draft Strategy default, Rookie Rankings). Strategy tab has team selector dropdown and expandable cards. Rankings tab has position filter pills. Route: `/league/:leagueId/draft`.
 - Off-season league fetching: Landing page fetches both current season and 2025 season leagues in parallel, merges with deduplication using `previous_league_id` to avoid showing the same league twice when it has already rolled over. This ensures leagues still in their 2025 season are visible during the off-season transition period.
 - Sleeper `previous_league_id`: every league object includes this field, pointing to the prior season's league_id (or null for first-season leagues). Used for deduplication when merging multi-season league lists.
+- Trade Targets algorithm (src/utils/tradeTargets.ts): separate from Trade Finder — analyses per-team needs and finds specific player targets on other rosters. `findTradeTargets()` is the entry point, returns `TradeTargetResult` with `recommendations[]` and `rebuilderPickSuggestions[]`. Builds `TeamProfile` objects with positional values, surplus detection, and tier classification. Contender mode targets players at weak positions; rebuilder mode finds sell-high candidates and young player swaps.
+- Trade Targets UI: fourth tab "Trade Targets" in Trade Tools page (src/pages/TradeFinder.tsx). Team selector dropdown, `TradeTargetCard` components with expandable roster impact. `CompactTradeTargetCard` in TeamDetail shows top 3 recommendations per team.
+- Trade target trade packages: `buildTradePackage()` constructs balanced trades by selecting tradable players from surplus positions, then adding counter-balance players from the target team if needed. `MAX_DIFF_PCT = 35` for value balance tolerance.
+- Trade target needs detection: contenders/fringe teams get needs from Weak positional grades. When all positions are Strong (no Weak grades), falls back to "maintain depth" needs using the lowest-graded positions. Rebuilders use sell-candidate detection (players with Trade/Sell recommendations) paired with young player targets from contenders.
+- Rebuilder pick range estimation: `estimatePickRange()` uses `buildRookiePickValueMap()` from draftPicks.ts to find the closest rookie pick by trade value, then builds a ±2 pick range formatted as "Early Round 1 (1.01–1.05)". Falls back to generic round labels when no rookie values available (pre-draft). Used in `buildRebuilderPickSuggestions()`.
+- Acceptability scoring: `computeAcceptability()` in tradeTargets.ts simulates the trade from the OTHER team's perspective by calling `analyseRoster()` on their modified roster (they lose what you receive, they gain what you give). Score = `netGradeChange * 1000 + netValueChange / 10`. Returns `score`, `reasons[]`, `beforeGrades`, and `afterGrades`.
+- Acceptability reasons: generated from positional grade upgrades/downgrades, tier-context logic (contenders care about filling weaknesses and having depth to spare; rebuilders want young assets and are happy to move aging players), and net value impact. Displayed as a color-coded reasons panel in TradeFinder and bullet points in TeamDetail compact cards.
+- Acceptability badge thresholds: "Likely Accept" (green) if score > 500, "Possible" (yellow) if score > 0, "Unlikely" (red) if score ≤ 0. Trades sorted by acceptability (primary) then improvement score (tiebreaker).
+- Trade Targets deep linking: TeamDetail "View all in Trade Tools →" links to `/league/${leagueId}/trades?tab=targets&team=${roster.roster_id}`. TradeFinder reads `tab` and `team` from `useSearchParams()` on mount to initialize view and selected team. `TradeTargetsView` accepts `initialTeam` prop.
+- Trade Tools page now has four tabs: Trade Finder, Trade Evaluator (links to separate page), Trade History, Trade Targets. Player search bar filters recommendations by player name across all tabs.

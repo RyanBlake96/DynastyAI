@@ -582,6 +582,23 @@ function TradeTargetCard({ rec, leagueId, rank }: { rec: TradeRecommendation; le
       {/* Explanation */}
       <p className="text-xs text-gray-600 dark:text-gray-300">{rec.explanation}</p>
 
+      {/* Acceptability reasons */}
+      {rec.acceptabilityReasons.length > 0 && (
+        <div className={`text-xs rounded-lg px-3 py-2 space-y-0.5 ${
+          rec.acceptabilityScore > 500 ? 'bg-green-50 dark:bg-green-900/20 text-green-700 dark:text-green-400' :
+          rec.acceptabilityScore > 0 ? 'bg-yellow-50 dark:bg-yellow-900/20 text-yellow-700 dark:text-yellow-400' :
+          'bg-red-50 dark:bg-red-900/20 text-red-700 dark:text-red-400'
+        }`}>
+          <p className="font-medium mb-0.5">Why {rec.acceptabilityScore > 500 ? 'they\'d accept' : rec.acceptabilityScore > 0 ? 'they might consider' : 'they\'d likely decline'}:</p>
+          {rec.acceptabilityReasons.map((reason, i) => (
+            <p key={i} className="flex items-start gap-1.5">
+              <span className="mt-0.5">{reason.includes('upgrades') || reason.includes('Fills') || reason.includes('gain') || reason.includes('depth to spare') || reason.includes('young asset') || reason.includes('happy to move') || reason.includes('improves') ? '✓' : '✗'}</span>
+              <span>{reason}</span>
+            </p>
+          ))}
+        </div>
+      )}
+
       {/* Trade layout */}
       <div className="grid grid-cols-2 gap-4">
         {/* You give */}

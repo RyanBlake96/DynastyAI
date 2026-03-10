@@ -45,6 +45,7 @@ export interface TradeRecommendation {
   afterGrades: PositionalGradeSnapshot[];
   improvementScore: number;
   acceptabilityScore: number;
+  acceptabilityReasons: string[];
   otherTeamImpact: { beforeGrades: PositionalGradeSnapshot[]; afterGrades: PositionalGradeSnapshot[] };
   explanation: string;
 }
@@ -562,9 +563,9 @@ function computeAcceptability(
   values: ValuesResponse,
   players: Record<string, any>,
   rosterPositions: string[],
-): { score: number; beforeGrades: PositionalGradeSnapshot[]; afterGrades: PositionalGradeSnapshot[] } {
+): { score: number; reasons: string[]; beforeGrades: PositionalGradeSnapshot[]; afterGrades: PositionalGradeSnapshot[] } {
   if (!targetTeamProfile) {
-    return { score: 0, beforeGrades: [], afterGrades: [] };
+    return { score: 0, reasons: [], beforeGrades: [], afterGrades: [] };
   }
 
   const theirBeforeAnalysis = analyseRoster(targetTeamProfile.roster, rosters, values, players, rosterPositions);
@@ -578,15 +579,93 @@ function computeAcceptability(
   // Score: net grade changes + net value changes
   let netGradeChange = 0;
   let netValueChange = 0;
+  const reasons: string[] = [];
+  const upgrades: string[] = [];
+  const downgrades: string[] = [];
+
   for (let i = 0; i < theirAfterGrades.length; i++) {
     const before = theirBeforeGrades[i];
     const after = theirAfterGrades[i];
-    netGradeChange += gradeNumeric(after.grade) - gradeNumeric(before.grade);
-    netValueChange += after.totalValue - before.totalValue;
+    const gradeDelta = gradeNumeric(after.grade) - gradeNumeric(before.grade);
+    const valueDelta = after.totalValue - before.totalValue;
+    netGradeChange += gradeDelta;
+    netValueChange += valueDelta;
+
+    if (gradeDelta > 0) {
+      upgrades.push(`${after.position} upgrades from ${before.grade} to ${after.grade}`);
+    } else if (gradeDelta < 0) {
+      downgrades.push(`${after.position} drops from ${before.grade} to ${after.grade}`);
+    } else if (before.grade === 'Weak' && valueDelta > 0) {
+      upgrades.push(`${after.position} depth improves (still ${after.grade})`);
+    }
   }
 
+  // Build human-readable reasons
+  if (upgrades.length > 0) {
+    reasons.push(...upgrades.map(u => `Their ${u}`));
+  }
+  if (downgrades.length > 0) {
+    reasons.push(...downgrades.map(d => `Their ${d}`));
+  }
+
+  // Tier-context reasons
+  const tier = targetTeamProfile.tier;
+  // Figure out what positions they're receiving (givePlayerIds = what we give = what they receive)
+  const receivingPositions = new Set<string>();
+  for (const pid of givePlayerIds) {
+    const p = players[pid];
+    if (p) receivingPositions.add(p.position);
+  }
+  const losingPositions = new Set<string>();
+  for (const pid of receivePlayerIds) {
+    const p = players[pid];
+    if (p) losingPositions.add(p.position);
+  }
+
+  if (tier === 'Strong Contender' || tier === 'Contender') {
+    // Contenders care about filling weak spots for a championship push
+    for (const pos of receivingPositions) {
+      const beforeGrade = theirBeforeGrades.find(g => g.position === pos);
+      if (beforeGrade && beforeGrade.grade === 'Weak') {
+        reasons.push(`Fills their ${pos} weakness — key for a contender`);
+      }
+    }
+    for (const pos of losingPositions) {
+      const beforeGrade = theirBeforeGrades.find(g => g.position === pos);
+      if (beforeGrade && beforeGrade.grade === 'Strong') {
+        reasons.push(`They have ${pos} depth to spare`);
+      } else if (beforeGrade && beforeGrade.grade !== 'Strong') {
+        reasons.push(`Losing ${pos} depth hurts their championship push`);
+      }
+    }
+  } else if (tier === 'Rebuilder') {
+    // Rebuilders want younger players and future value
+    for (const pid of givePlayerIds) {
+      const p = players[pid];
+      if (p && p.age && p.age <= 24) {
+        reasons.push(`They receive a young asset (${p.full_name || p.first_name + ' ' + p.last_name}, age ${p.age})`);
+      }
+    }
+    for (const pid of receivePlayerIds) {
+      const p = players[pid];
+      if (p && p.age && p.age >= 28) {
+        reasons.push(`They're happy to move an aging ${p.position} (age ${p.age})`);
+      }
+    }
+  }
+
+  // Value balance reason
+  if (netValueChange > 500) {
+    reasons.push(`They gain ${Math.round(netValueChange).toLocaleString()} in total roster value`);
+  } else if (netValueChange < -500) {
+    reasons.push(`They lose ${Math.round(Math.abs(netValueChange)).toLocaleString()} in total roster value`);
+  }
+
+  // Deduplicate
+  const uniqueReasons = [...new Set(reasons)];
+
   const score = netGradeChange * 1000 + netValueChange / 10;
-  return { score, beforeGrades: theirBeforeGrades, afterGrades: theirAfterGrades };
+  return { score, reasons: uniqueReasons, beforeGrades: theirBeforeGrades, afterGrades: theirAfterGrades };
 }
 
 // --- Build a single trade recommendation ---
@@ -712,6 +791,7 @@ function buildRecommendation(
     afterGrades,
     improvementScore,
     acceptabilityScore: acceptability.score,
+    acceptabilityReasons: acceptability.reasons,
     otherTeamImpact: { beforeGrades: acceptability.beforeGrades, afterGrades: acceptability.afterGrades },
     explanation,
   };
@@ -836,6 +916,7 @@ function buildRebuilderTradeRecommendations(
             afterGrades,
             improvementScore: youngP.value / 10 + (youngP.age !== null && youngP.age <= 24 ? 500 : 0),
             acceptabilityScore: acceptability.score,
+            acceptabilityReasons: acceptability.reasons,
             otherTeamImpact: { beforeGrades: acceptability.beforeGrades, afterGrades: acceptability.afterGrades },
             explanation: `Sell high on ${sellPlayer.name}${ageNote} to ${contenderProfile.teamName} who needs ${sellPlayer.position} help. ` +
               `Receive ${youngP.name} (age ${youngP.age ?? '?'}) to build around (${fairnessLabel(pct)} trade).`,
@@ -895,6 +976,7 @@ function buildRebuilderTradeRecommendations(
                 afterGrades,
                 improvementScore: total / 10 + (p1.age !== null && p1.age <= 24 ? 300 : 0) + (p2.age !== null && p2.age <= 24 ? 300 : 0),
                 acceptabilityScore: acceptability2.score,
+                acceptabilityReasons: acceptability2.reasons,
                 otherTeamImpact: { beforeGrades: acceptability2.beforeGrades, afterGrades: acceptability2.afterGrades },
                 explanation: `Sell high on ${sellPlayer.name}${ageNote} to ${contenderProfile.teamName}. ` +
                   `Receive ${p1.name} + ${p2.name} — young pieces to build around (${fairnessLabel(pct)} trade).`,

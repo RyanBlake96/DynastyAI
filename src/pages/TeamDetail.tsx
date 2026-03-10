@@ -580,6 +580,17 @@ function CompactTradeTargetCard({ rec, leagueId }: { rec: TradeRecommendation; l
       {expanded && (
         <div className="mt-2 bg-gray-50 dark:bg-gray-900 rounded p-2">
           <p className="text-xs text-gray-600 dark:text-gray-300 mb-2">{rec.explanation}</p>
+          {rec.acceptabilityReasons.length > 0 && (
+            <div className={`text-xs rounded px-2 py-1.5 mb-2 space-y-0.5 ${
+              rec.acceptabilityScore > 500 ? 'bg-green-50 dark:bg-green-900/30 text-green-700 dark:text-green-400' :
+              rec.acceptabilityScore > 0 ? 'bg-yellow-50 dark:bg-yellow-900/30 text-yellow-700 dark:text-yellow-400' :
+              'bg-red-50 dark:bg-red-900/30 text-red-700 dark:text-red-400'
+            }`}>
+              {rec.acceptabilityReasons.slice(0, 3).map((reason, i) => (
+                <p key={i}>• {reason}</p>
+              ))}
+            </div>
+          )}
           <div className="grid grid-cols-4 gap-1 text-center">
             {rec.beforeGrades.map((bg, idx) => {
               const ag = rec.afterGrades[idx];
