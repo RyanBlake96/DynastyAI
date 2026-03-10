@@ -447,13 +447,16 @@ function PositionalRankingsView({
             team: players[pid]?.team || '',
             age: players[pid]?.age || 0,
             value: getPlayerValue(values, pid),
-            isStarter: pos === 'QB' ? false : optimalStarters.has(pid), // QB handled below
+            isStarter: (pos === 'QB' || pos === 'TE') ? false : optimalStarters.has(pid), // QB/TE handled below
           }))
           .sort((a, b) => b.value - a.value);
 
-        // QB: top N by value are starters
+        // QB: top N by value are starters (N = QB + SF slots)
+        // TE: top 1 by value is starter
         if (pos === 'QB') {
           allPlayers.forEach((p, i) => { p.isStarter = i < qbSlots; });
+        } else if (pos === 'TE') {
+          allPlayers.forEach((p, i) => { p.isStarter = i < 1; });
         }
 
         const starters = allPlayers.filter(p => p.isStarter);
