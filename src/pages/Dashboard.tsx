@@ -3,7 +3,7 @@ import { Link } from 'react-router-dom';
 import { useLeagueLayout } from '../components/LeagueLayout';
 import { usePlayers } from '../hooks/usePlayers';
 import { usePlayerValues } from '../hooks/usePlayerValues';
-import { computePowerRankings, computeOptimalStarters } from '../utils/powerRankings';
+import { computePowerRankings } from '../utils/powerRankings';
 import { countQbStarterSlots } from '../utils/rosterConstruction';
 import { getPlayerValue } from '../hooks/usePlayerValues';
 import type { ValuesResponse } from '../api/values';
@@ -374,13 +374,14 @@ function PowerRankingsView({
 
 // --- Positional Rankings View ---
 
-type PositionalTab = 'QB' | 'RB' | 'WR' | 'TE';
+type PositionalTab = 'QB' | 'RB' | 'WR' | 'TE' | 'FLEX';
 
 const POS_TAB_COLORS: Record<PositionalTab, { active: string; dot: string }> = {
   QB: { active: 'bg-red-500 text-white border-red-500', dot: 'bg-red-400' },
   RB: { active: 'bg-blue-500 text-white border-blue-500', dot: 'bg-blue-400' },
   WR: { active: 'bg-green-500 text-white border-green-500', dot: 'bg-green-400' },
   TE: { active: 'bg-orange-500 text-white border-orange-500', dot: 'bg-orange-400' },
+  FLEX: { active: 'bg-purple-500 text-white border-purple-500', dot: 'bg-purple-400' },
 };
 
 const GRADE_BG: Record<string, string> = {
@@ -419,65 +420,159 @@ function PositionalRankingsView({
 }) {
   const [activePos, setActivePos] = useState<PositionalTab>('QB');
 
+  // Flex slot types and their eligible positions
+  const FLEX_SLOT_TYPES = ['FLEX', 'SUPER_FLEX', 'REC_FLEX', 'WRRB_FLEX'];
+  const FLEX_ELIGIBLE: Record<string, string[]> = {
+    FLEX: ['RB', 'WR', 'TE'],
+    SUPER_FLEX: ['QB', 'RB', 'WR', 'TE'],
+    REC_FLEX: ['WR', 'TE'],
+    WRRB_FLEX: ['RB', 'WR'],
+  };
+
   const teamData = useMemo(() => {
-    const positions: PositionalTab[] = ['QB', 'RB', 'WR', 'TE'];
+    const allTabs: PositionalTab[] = ['QB', 'RB', 'WR', 'TE', 'FLEX'];
     const qbSlots = countQbStarterSlots(rosterPositions);
-    const result: Record<PositionalTab, TeamPositionalData[]> = { QB: [], RB: [], WR: [], TE: [] };
+    const rbSlotCount = rosterPositions.filter(s => s === 'RB').length;
+    const wrSlotCount = rosterPositions.filter(s => s === 'WR').length;
+    const teSlotCount = 1;
+    const flexSlots = rosterPositions.filter(s => FLEX_SLOT_TYPES.includes(s));
 
-    // Compute optimal starters for each roster
-    const rosterStarters = new Map<number, Set<string>>();
+    const result: Record<PositionalTab, TeamPositionalData[]> = { QB: [], RB: [], WR: [], TE: [], FLEX: [] };
+
     for (const roster of rosters) {
-      const starters = roster.players
-        ? computeOptimalStarters(roster.players, rosterPositions, players, values)
-        : new Set<string>();
-      rosterStarters.set(roster.roster_id, starters);
-    }
+      const rosterPlayers = roster.players || [];
 
-    // Build per-position data for each team
-    for (const pos of positions) {
-      const teamsAtPos: TeamPositionalData[] = [];
+      // Build player data grouped by position, sorted by value desc
+      const playersByPos: Record<string, { id: string; name: string; team: string; age: number; value: number }[]> = {};
+      for (const pos of ['QB', 'RB', 'WR', 'TE']) playersByPos[pos] = [];
 
-      for (const roster of rosters) {
-        const optimalStarters = rosterStarters.get(roster.roster_id)!;
-        const allPlayers = (roster.players || [])
-          .filter(pid => players[pid]?.position === pos)
-          .map(pid => ({
-            id: pid,
-            name: players[pid]?.full_name || players[pid]?.first_name + ' ' + players[pid]?.last_name || pid,
-            team: players[pid]?.team || '',
-            age: players[pid]?.age || 0,
-            value: getPlayerValue(values, pid),
-            isStarter: (pos === 'QB' || pos === 'TE') ? false : optimalStarters.has(pid), // QB/TE handled below
-          }))
-          .sort((a, b) => b.value - a.value);
-
-        // QB: top N by value are starters (N = QB + SF slots)
-        // TE: top 1 by value is starter
-        if (pos === 'QB') {
-          allPlayers.forEach((p, i) => { p.isStarter = i < qbSlots; });
-        } else if (pos === 'TE') {
-          allPlayers.forEach((p, i) => { p.isStarter = i < 1; });
-        }
-
-        const starters = allPlayers.filter(p => p.isStarter);
-        const bench = allPlayers.filter(p => !p.isStarter);
-        const starterTotal = starters.reduce((s, p) => s + p.value, 0);
-        const starterValue = starters.length > 0 ? starterTotal / starters.length : 0;
-        const benchValue = bench.reduce((s, p) => s + p.value, 0);
-
-        teamsAtPos.push({
-          rosterId: roster.roster_id,
-          teamName: getUserName(roster, users),
-          starters,
-          bench,
-          starterValue,
-          benchValue,
-          totalValue: starterTotal + benchValue,
-          starterGrade: 'Adequate', // computed below
+      for (const pid of rosterPlayers) {
+        const pos = players[pid]?.position as string;
+        if (!pos || !playersByPos[pos]) continue;
+        playersByPos[pos].push({
+          id: pid,
+          name: players[pid]?.full_name || players[pid]?.first_name + ' ' + players[pid]?.last_name || pid,
+          team: players[pid]?.team || '',
+          age: players[pid]?.age || 0,
+          value: getPlayerValue(values, pid),
         });
       }
+      for (const pos of ['QB', 'RB', 'WR', 'TE']) {
+        playersByPos[pos].sort((a, b) => b.value - a.value);
+      }
 
-      // Compute starter grades by percentile
+      // Assign dedicated starters by position
+      const qbStarters = playersByPos['QB'].slice(0, qbSlots);
+      const rbStarters = playersByPos['RB'].slice(0, rbSlotCount);
+      const wrStarters = playersByPos['WR'].slice(0, wrSlotCount);
+      const teStarters = playersByPos['TE'].slice(0, teSlotCount);
+
+      // Compute flex starters: fill flex slots greedily from remaining eligible players
+      const dedicatedIds = new Set([
+        ...playersByPos['QB'].slice(0, rosterPositions.filter(s => s === 'QB').length).map(p => p.id),
+        ...rbStarters.map(p => p.id),
+        ...wrStarters.map(p => p.id),
+        ...teStarters.map(p => p.id),
+      ]);
+
+      // All remaining players eligible for flex, sorted by value
+      const allRemainingPlayers = ['QB', 'RB', 'WR', 'TE']
+        .flatMap(pos => playersByPos[pos].filter(p => !dedicatedIds.has(p.id)))
+        .sort((a, b) => b.value - a.value);
+
+      // Sort flex slots by restrictiveness (fewest eligible positions first)
+      const sortedFlexSlots = [...flexSlots].sort(
+        (a, b) => (FLEX_ELIGIBLE[a]?.length || 99) - (FLEX_ELIGIBLE[b]?.length || 99)
+      );
+
+      const flexStarters: { id: string; name: string; team: string; age: number; value: number }[] = [];
+      const usedInFlex = new Set<string>();
+
+      for (const slotType of sortedFlexSlots) {
+        const eligible = FLEX_ELIGIBLE[slotType] || [];
+        let best: typeof allRemainingPlayers[0] | null = null;
+        for (const p of allRemainingPlayers) {
+          if (usedInFlex.has(p.id)) continue;
+          const pos = players[p.id]?.position as string;
+          if (eligible.includes(pos)) {
+            best = p;
+            break;
+          }
+        }
+        if (best) {
+          usedInFlex.add(best.id);
+          flexStarters.push(best);
+        }
+      }
+
+      const teamName = getUserName(roster, users);
+      const rosterId = roster.roster_id;
+
+      // Build data for each position tab
+      // QB: top qbSlots QBs (includes SF QB)
+      const qbBench = playersByPos['QB'].slice(qbSlots);
+      const qbStarterValue = qbStarters.reduce((s, p) => s + p.value, 0);
+      result['QB'].push({
+        rosterId, teamName,
+        starters: qbStarters, bench: qbBench,
+        starterValue: qbStarterValue,
+        benchValue: qbBench.reduce((s, p) => s + p.value, 0),
+        totalValue: playersByPos['QB'].reduce((s, p) => s + p.value, 0),
+        starterGrade: 'Adequate',
+      });
+
+      // RB: dedicated RB slot starters only
+      const rbBench = playersByPos['RB'].slice(rbSlotCount);
+      const rbStarterValue = rbStarters.reduce((s, p) => s + p.value, 0);
+      result['RB'].push({
+        rosterId, teamName,
+        starters: rbStarters, bench: rbBench,
+        starterValue: rbStarterValue,
+        benchValue: rbBench.reduce((s, p) => s + p.value, 0),
+        totalValue: playersByPos['RB'].reduce((s, p) => s + p.value, 0),
+        starterGrade: 'Adequate',
+      });
+
+      // WR: dedicated WR slot starters only
+      const wrBench = playersByPos['WR'].slice(wrSlotCount);
+      const wrStarterValue = wrStarters.reduce((s, p) => s + p.value, 0);
+      result['WR'].push({
+        rosterId, teamName,
+        starters: wrStarters, bench: wrBench,
+        starterValue: wrStarterValue,
+        benchValue: wrBench.reduce((s, p) => s + p.value, 0),
+        totalValue: playersByPos['WR'].reduce((s, p) => s + p.value, 0),
+        starterGrade: 'Adequate',
+      });
+
+      // TE: top 1 TE starter
+      const teBench = playersByPos['TE'].slice(teSlotCount);
+      const teStarterValue = teStarters.reduce((s, p) => s + p.value, 0);
+      result['TE'].push({
+        rosterId, teamName,
+        starters: teStarters, bench: teBench,
+        starterValue: teStarterValue,
+        benchValue: teBench.reduce((s, p) => s + p.value, 0),
+        totalValue: playersByPos['TE'].reduce((s, p) => s + p.value, 0),
+        starterGrade: 'Adequate',
+      });
+
+      // FLEX: players filling flex slots
+      const flexBench = allRemainingPlayers.filter(p => !usedInFlex.has(p.id));
+      const flexStarterValue = flexStarters.reduce((s, p) => s + p.value, 0);
+      result['FLEX'].push({
+        rosterId, teamName,
+        starters: flexStarters, bench: flexBench,
+        starterValue: flexStarterValue,
+        benchValue: flexBench.reduce((s, p) => s + p.value, 0),
+        totalValue: flexStarterValue + flexBench.reduce((s, p) => s + p.value, 0),
+        starterGrade: 'Adequate',
+      });
+    }
+
+    // Compute grades and sort for each tab
+    for (const tab of allTabs) {
+      const teamsAtPos = result[tab];
       const starterValues = teamsAtPos.map(t => t.starterValue).sort((a, b) => b - a);
       const n = starterValues.length;
       const topThreshold = Math.ceil(n / 3);
@@ -491,9 +586,7 @@ function PositionalRankingsView({
         else team.starterGrade = 'Weak';
       }
 
-      // Sort by starter value descending
       teamsAtPos.sort((a, b) => b.starterValue - a.starterValue);
-      result[pos] = teamsAtPos;
     }
 
     return result;
@@ -506,7 +599,7 @@ function PositionalRankingsView({
     <div>
       {/* Position tabs */}
       <div className="flex gap-2 mb-4">
-        {(['QB', 'RB', 'WR', 'TE'] as PositionalTab[]).map(pos => (
+        {(['QB', 'RB', 'WR', 'TE', 'FLEX'] as PositionalTab[]).map(pos => (
           <button
             key={pos}
             onClick={() => setActivePos(pos)}
@@ -554,7 +647,7 @@ function PositionalRankingsView({
                   )}
                 </div>
                 <div className="flex items-center gap-4 text-sm">
-                  <span className="text-gray-700 dark:text-gray-300 font-semibold">Avg {formatValue(team.starterValue)}</span>
+                  <span className="text-gray-700 dark:text-gray-300 font-semibold">{formatValue(team.starterValue)}</span>
                   <span className="text-gray-400 dark:text-gray-500 text-xs">Bench: {formatValue(team.benchValue)}</span>
                 </div>
               </div>
@@ -569,20 +662,33 @@ function PositionalRankingsView({
 
               {/* Starters */}
               <div className="mb-2">
-                <p className="text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wide mb-1">Starters</p>
+                <p className="text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wide mb-1">
+                  {activePos === 'FLEX' ? 'Flex Starters' : 'Starters'}
+                </p>
                 <div className="flex flex-wrap gap-2">
-                  {team.starters.map(p => (
-                    <Link
-                      key={p.id}
-                      to={`/league/${leagueId}/player/${p.id}`}
-                      className="flex items-center gap-1.5 bg-gray-50 dark:bg-gray-700 rounded-lg px-2.5 py-1.5 hover:bg-gray-100 dark:hover:bg-gray-600 transition-colors"
-                    >
-                      <span className="text-sm font-medium text-gray-900 dark:text-gray-100">{p.name}</span>
-                      {p.team && <span className="text-xs text-gray-400 dark:text-gray-500">{p.team}</span>}
-                      {p.age > 0 && <span className="text-xs text-gray-400 dark:text-gray-500">({p.age})</span>}
-                      <span className="text-xs font-semibold text-gray-600 dark:text-gray-300">{formatValue(p.value)}</span>
-                    </Link>
-                  ))}
+                  {team.starters.map(p => {
+                    const playerPos = players[p.id]?.position as string;
+                    return (
+                      <Link
+                        key={p.id}
+                        to={`/league/${leagueId}/player/${p.id}`}
+                        className="flex items-center gap-1.5 bg-gray-50 dark:bg-gray-700 rounded-lg px-2.5 py-1.5 hover:bg-gray-100 dark:hover:bg-gray-600 transition-colors"
+                      >
+                        {activePos === 'FLEX' && playerPos && (
+                          <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded ${
+                            playerPos === 'QB' ? 'bg-red-100 text-red-700 dark:bg-red-900/50 dark:text-red-300' :
+                            playerPos === 'RB' ? 'bg-blue-100 text-blue-700 dark:bg-blue-900/50 dark:text-blue-300' :
+                            playerPos === 'WR' ? 'bg-green-100 text-green-700 dark:bg-green-900/50 dark:text-green-300' :
+                            'bg-orange-100 text-orange-700 dark:bg-orange-900/50 dark:text-orange-300'
+                          }`}>{playerPos}</span>
+                        )}
+                        <span className="text-sm font-medium text-gray-900 dark:text-gray-100">{p.name}</span>
+                        {p.team && <span className="text-xs text-gray-400 dark:text-gray-500">{p.team}</span>}
+                        {p.age > 0 && <span className="text-xs text-gray-400 dark:text-gray-500">({p.age})</span>}
+                        <span className="text-xs font-semibold text-gray-600 dark:text-gray-300">{formatValue(p.value)}</span>
+                      </Link>
+                    );
+                  })}
                   {team.starters.length === 0 && (
                     <span className="text-xs text-gray-400 dark:text-gray-500 italic">No starters</span>
                   )}
@@ -594,16 +700,22 @@ function PositionalRankingsView({
                 <div>
                   <p className="text-xs font-medium text-gray-400 dark:text-gray-500 uppercase tracking-wide mb-1">Bench</p>
                   <div className="flex flex-wrap gap-1.5">
-                    {team.bench.map(p => (
-                      <Link
-                        key={p.id}
-                        to={`/league/${leagueId}/player/${p.id}`}
-                        className="flex items-center gap-1 text-xs text-gray-500 dark:text-gray-400 hover:text-blue-600 dark:hover:text-blue-400 bg-gray-50/50 dark:bg-gray-700/50 rounded px-2 py-1"
-                      >
-                        <span>{p.name}</span>
-                        <span className="text-gray-400 dark:text-gray-500">{formatValue(p.value)}</span>
-                      </Link>
-                    ))}
+                    {team.bench.map(p => {
+                      const playerPos = players[p.id]?.position as string;
+                      return (
+                        <Link
+                          key={p.id}
+                          to={`/league/${leagueId}/player/${p.id}`}
+                          className="flex items-center gap-1 text-xs text-gray-500 dark:text-gray-400 hover:text-blue-600 dark:hover:text-blue-400 bg-gray-50/50 dark:bg-gray-700/50 rounded px-2 py-1"
+                        >
+                          {activePos === 'FLEX' && playerPos && (
+                            <span className="text-[10px] font-bold text-gray-400 dark:text-gray-500">{playerPos}</span>
+                          )}
+                          <span>{p.name}</span>
+                          <span className="text-gray-400 dark:text-gray-500">{formatValue(p.value)}</span>
+                        </Link>
+                      );
+                    })}
                   </div>
                 </div>
               )}
@@ -613,7 +725,7 @@ function PositionalRankingsView({
       </div>
 
       <p className="text-xs text-gray-400 dark:text-gray-500 mt-2">
-        Teams ranked by average starter value at {activePos}. Grades based on league-wide percentile (top 33% = Strong, middle = Adequate, bottom = Weak).
+        Teams ranked by total starter value at {activePos}. {activePos === 'FLEX' ? 'Flex includes FLEX, SUPER_FLEX, REC_FLEX, and WRRB_FLEX slots. ' : ''}Grades based on league-wide percentile (top 33% = Strong, middle = Adequate, bottom = Weak).
       </p>
     </div>
   );
