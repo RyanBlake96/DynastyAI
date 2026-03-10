@@ -6,6 +6,8 @@ import { usePlayerValues, getPlayerValue, getPlayerValueBreakdown } from '../hoo
 import { analyseRoster } from '../utils/rosterConstruction';
 import { computePowerRankings } from '../utils/powerRankings';
 import { computeRecommendation } from '../utils/recommendations';
+import { findTradeTargets } from '../utils/tradeTargets';
+import type { TradeRecommendation } from '../utils/tradeTargets';
 import { fetchTradedPicks, fetchDrafts, fetchDraftPicks } from '../api/sleeper';
 import { buildDraftOrder, getDraftSlotOrder, buildPickOwnership, buildRookiePickValueMap, applyRookieValues } from '../utils/draftPicks';
 import type { PickOwnership } from '../utils/draftPicks';
@@ -247,6 +249,7 @@ export default function TeamDetail() {
           <RosterAnalysisCard
             roster={roster}
             allRosters={rosters}
+            users={users}
             values={values}
             players={players}
             rosterPositions={league.roster_positions}
@@ -346,6 +349,7 @@ const REC_COLORS: Record<Recommendation, string> = {
 function RosterAnalysisCard({
   roster,
   allRosters,
+  users,
   values,
   players,
   rosterPositions,
@@ -353,6 +357,7 @@ function RosterAnalysisCard({
 }: {
   roster: SleeperRoster;
   allRosters: SleeperRoster[];
+  users: SleeperUser[];
   values: import('../api/values').ValuesResponse;
   players: Record<string, any>;
   rosterPositions: string[];
@@ -367,6 +372,12 @@ function RosterAnalysisCard({
 
   // Tier-aware insights
   const tierInsights = buildTierInsights(tier, analysis, roster, allRosters, values, players, rosterPositions, leagueId);
+
+  // Trade targets
+  const tradeTargetResult = useMemo(() => {
+    if (rankings.length === 0) return null;
+    return findTradeTargets(roster.roster_id, allRosters, users, rankings, values, players, rosterPositions);
+  }, [roster.roster_id, allRosters, users, rankings, values, players, rosterPositions]);
 
   return (
     <div className="bg-white dark:bg-gray-800 rounded-lg border border-gray-200 dark:border-gray-700 p-6">
@@ -460,6 +471,47 @@ function RosterAnalysisCard({
         </div>
       )}
 
+      {/* Trade Targets */}
+      {tradeTargetResult && tradeTargetResult.recommendations.length > 0 && (
+        <div className="border-t border-gray-100 dark:border-gray-700 pt-3 mb-3">
+          <div className="flex items-center justify-between mb-2">
+            <p className="text-xs text-gray-400 dark:text-gray-500 uppercase tracking-wide font-medium">
+              Trade Targets
+            </p>
+            <Link to={`/league/${leagueId}/trades`} className="text-xs text-blue-600 dark:text-blue-400 hover:underline">
+              View all in Trade Tools →
+            </Link>
+          </div>
+          <div className="space-y-2">
+            {tradeTargetResult.recommendations.slice(0, 3).map((rec, i) => (
+              <CompactTradeTargetCard key={i} rec={rec} leagueId={leagueId} />
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Rebuilder Pick Suggestions */}
+      {tradeTargetResult && tradeTargetResult.rebuilderPickSuggestions.length > 0 && tradeTargetResult.recommendations.length === 0 && (
+        <div className="border-t border-gray-100 dark:border-gray-700 pt-3 mb-3">
+          <p className="text-xs text-gray-400 dark:text-gray-500 uppercase tracking-wide font-medium mb-2">
+            Sell for Picks
+          </p>
+          <div className="space-y-1">
+            {tradeTargetResult.rebuilderPickSuggestions.slice(0, 3).map((s, i) => (
+              <div key={i} className="text-sm text-gray-600 dark:text-gray-300 flex items-start gap-2">
+                <span className="text-purple-500 mt-0.5">◆</span>
+                <span>
+                  <Link to={`/league/${leagueId}/player/${s.sellPlayer.id}`} className="font-medium text-gray-900 dark:text-gray-100 hover:text-blue-600 dark:hover:text-blue-400">
+                    {s.sellPlayer.name}
+                  </Link>
+                  {' '}→ {s.targetPickDescription} (est. {formatVal(s.estimatedPickValue)})
+                </span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
       {/* Efficiency flags */}
       {analysis.efficiencyFlags.length > 0 && (
         <div className="border-t border-gray-100 dark:border-gray-700 pt-3">
@@ -472,6 +524,81 @@ function RosterAnalysisCard({
               </li>
             ))}
           </ul>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function CompactTradeTargetCard({ rec, leagueId }: { rec: TradeRecommendation; leagueId: string }) {
+  const [expanded, setExpanded] = useState(false);
+  const targetPosGradeBefore = rec.beforeGrades.find(g => g.position === rec.targetPlayer.position);
+  const targetPosGradeAfter = rec.afterGrades.find(g => g.position === rec.targetPlayer.position);
+
+  return (
+    <div className="border border-gray-100 dark:border-gray-700 rounded-lg p-3">
+      <div className="flex items-center gap-2 mb-1">
+        <span className={`inline-block w-7 text-center text-xs font-semibold rounded px-1 py-0.5 ${POS_COLORS[rec.targetPlayer.position] || 'bg-gray-100'}`}>
+          {rec.targetPlayer.position}
+        </span>
+        <Link to={`/league/${leagueId}/player/${rec.targetPlayer.id}`} className="text-sm font-medium text-gray-900 dark:text-gray-100 hover:text-blue-600 dark:hover:text-blue-400">
+          {rec.targetPlayer.name}
+        </Link>
+        <span className="text-xs text-gray-400 dark:text-gray-500">{formatVal(rec.targetPlayer.value)}</span>
+        <span className={`text-xs rounded px-1.5 py-0.5 ml-auto ${
+          rec.fairnessGrade === 'Even' ? 'bg-green-100 text-green-700 dark:bg-green-900/40 dark:text-green-400' :
+          'bg-yellow-100 text-yellow-700 dark:bg-yellow-900/40 dark:text-yellow-400'
+        }`}>
+          {rec.fairnessGrade}
+        </span>
+      </div>
+      <div className="flex items-center gap-2 text-xs text-gray-500 dark:text-gray-400 mb-1">
+        <span>Give: {rec.giveAssets.map(a => a.name).join(' + ')} ({formatVal(rec.giveTotal)})</span>
+      </div>
+      {targetPosGradeBefore && targetPosGradeAfter && (
+        <div className="flex items-center gap-1 text-xs mb-1">
+          <span className="text-gray-500 dark:text-gray-400">{rec.targetPlayer.position}:</span>
+          <span className={`rounded px-1 py-0.5 ${GRADE_COLORS[targetPosGradeBefore.grade]}`}>{targetPosGradeBefore.grade}</span>
+          {targetPosGradeBefore.grade !== targetPosGradeAfter.grade && (
+            <>
+              <span className="text-gray-400">→</span>
+              <span className={`rounded px-1 py-0.5 ${GRADE_COLORS[targetPosGradeAfter.grade]}`}>{targetPosGradeAfter.grade}</span>
+            </>
+          )}
+          <span className="text-gray-400 dark:text-gray-500">
+            ({formatVal(targetPosGradeBefore.totalValue)} → {formatVal(targetPosGradeAfter.totalValue)})
+          </span>
+        </div>
+      )}
+      <button
+        onClick={() => setExpanded(!expanded)}
+        className="text-xs text-blue-600 dark:text-blue-400 hover:underline"
+      >
+        {expanded ? 'Hide details' : 'Show details'}
+      </button>
+      {expanded && (
+        <div className="mt-2 bg-gray-50 dark:bg-gray-900 rounded p-2">
+          <p className="text-xs text-gray-600 dark:text-gray-300 mb-2">{rec.explanation}</p>
+          <div className="grid grid-cols-4 gap-1 text-center">
+            {rec.beforeGrades.map((bg, idx) => {
+              const ag = rec.afterGrades[idx];
+              const changed = bg.grade !== ag.grade;
+              return (
+                <div key={bg.position} className={`rounded p-1 ${bg.position === rec.targetPlayer.position ? 'ring-1 ring-blue-400' : ''}`}>
+                  <p className="text-xs font-semibold text-gray-600 dark:text-gray-400">{bg.position}</p>
+                  <div className="flex items-center justify-center gap-0.5">
+                    <span className={`text-xs rounded px-1 py-0.5 ${GRADE_COLORS[bg.grade]}`}>{bg.grade[0]}</span>
+                    {changed && (
+                      <>
+                        <span className="text-xs text-gray-400">→</span>
+                        <span className={`text-xs rounded px-1 py-0.5 ${GRADE_COLORS[ag.grade]}`}>{ag.grade[0]}</span>
+                      </>
+                    )}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
         </div>
       )}
     </div>

@@ -30,6 +30,7 @@ export default function LeagueRankings() {
   const { values, status: valuesStatus } = usePlayerValues(data.leagueType);
   const [posFilter, setPosFilter] = useState<PosFilter>('All');
   const [ownerFilter, setOwnerFilter] = useState<OwnerFilter>('all');
+  const [searchText, setSearchText] = useState('');
 
   const { rosters, users } = data;
 
@@ -89,8 +90,12 @@ export default function LeagueRankings() {
     } else if (ownerFilter === 'free-agent') {
       list = list.filter(p => !ownerMap.has(p.id));
     }
+    if (searchText.trim()) {
+      const q = searchText.trim().toLowerCase();
+      list = list.filter(p => p.name.toLowerCase().includes(q));
+    }
     return list;
-  }, [rankedPlayers, posFilter, ownerFilter, ownerMap]);
+  }, [rankedPlayers, posFilter, ownerFilter, ownerMap, searchText]);
 
   const dataReady = valuesStatus === 'ready' && playersStatus === 'ready' && values && players;
   const displayPlayers = filteredPlayers.slice(0, 200);
@@ -137,6 +142,14 @@ export default function LeagueRankings() {
             ))}
           </div>
         </div>
+
+        <input
+          type="text"
+          value={searchText}
+          onChange={(e) => setSearchText(e.target.value)}
+          placeholder="Search player name..."
+          className="w-full sm:w-64 text-sm border border-gray-200 dark:border-gray-600 rounded-lg px-3 py-1.5 bg-white dark:bg-gray-800 text-gray-900 dark:text-gray-100 placeholder-gray-400 dark:placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-blue-500 dark:focus:ring-blue-400 mb-4"
+        />
 
         {!dataReady && (
           <p className="text-sm text-gray-400 dark:text-gray-500 py-8 text-center">Loading player values...</p>
