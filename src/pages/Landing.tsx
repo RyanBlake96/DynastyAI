@@ -31,6 +31,7 @@ export default function Landing() {
   // Rankings state
   const [leagueType, setLeagueType] = useState<LeagueType>('superflex');
   const [posFilter, setPosFilter] = useState<PosFilter>('All');
+  const [searchText, setSearchText] = useState('');
   const { values, status: valuesStatus } = usePlayerValues(leagueType);
   const { players, status: playersStatus } = usePlayers();
 
@@ -66,9 +67,14 @@ export default function Landing() {
   }, [values, players]);
 
   const filteredPlayers = useMemo(() => {
-    if (posFilter === 'All') return rankedPlayers;
-    return rankedPlayers.filter(p => p.position === posFilter);
-  }, [rankedPlayers, posFilter]);
+    let list = rankedPlayers;
+    if (posFilter !== 'All') list = list.filter(p => p.position === posFilter);
+    if (searchText.trim()) {
+      const q = searchText.trim().toLowerCase();
+      list = list.filter(p => p.name.toLowerCase().includes(q));
+    }
+    return list;
+  }, [rankedPlayers, posFilter, searchText]);
 
   const displayPlayers = filteredPlayers.slice(0, 100);
 
@@ -254,6 +260,14 @@ export default function Landing() {
             </button>
           ))}
         </div>
+
+        <input
+          type="text"
+          value={searchText}
+          onChange={(e) => setSearchText(e.target.value)}
+          placeholder="Search player name..."
+          className="w-full sm:w-64 text-sm border border-gray-200 dark:border-gray-600 rounded-lg px-3 py-1.5 bg-white dark:bg-gray-800 text-gray-900 dark:text-gray-100 placeholder-gray-400 dark:placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-blue-500 dark:focus:ring-blue-400 mb-4"
+        />
 
         {!dataReady && (
           <p className="text-sm text-gray-400 dark:text-gray-500 py-8 text-center">Loading player rankings...</p>
