@@ -458,7 +458,8 @@ function PositionalRankingsView({
 
         const starters = allPlayers.filter(p => p.isStarter);
         const bench = allPlayers.filter(p => !p.isStarter);
-        const starterValue = starters.reduce((s, p) => s + p.value, 0);
+        const starterTotal = starters.reduce((s, p) => s + p.value, 0);
+        const starterValue = starters.length > 0 ? starterTotal / starters.length : 0;
         const benchValue = bench.reduce((s, p) => s + p.value, 0);
 
         teamsAtPos.push({
@@ -468,7 +469,7 @@ function PositionalRankingsView({
           bench,
           starterValue,
           benchValue,
-          totalValue: starterValue + benchValue,
+          totalValue: starterTotal + benchValue,
           starterGrade: 'Adequate', // computed below
         });
       }
@@ -550,7 +551,7 @@ function PositionalRankingsView({
                   )}
                 </div>
                 <div className="flex items-center gap-4 text-sm">
-                  <span className="text-gray-700 dark:text-gray-300 font-semibold">{formatValue(team.starterValue)}</span>
+                  <span className="text-gray-700 dark:text-gray-300 font-semibold">Avg {formatValue(team.starterValue)}</span>
                   <span className="text-gray-400 dark:text-gray-500 text-xs">Bench: {formatValue(team.benchValue)}</span>
                 </div>
               </div>
@@ -609,7 +610,7 @@ function PositionalRankingsView({
       </div>
 
       <p className="text-xs text-gray-400 dark:text-gray-500 mt-2">
-        Teams ranked by starting lineup value at {activePos}. Grades based on league-wide percentile (top 33% = Strong, middle = Adequate, bottom = Weak).
+        Teams ranked by average starter value at {activePos}. Grades based on league-wide percentile (top 33% = Strong, middle = Adequate, bottom = Weak).
       </p>
     </div>
   );
