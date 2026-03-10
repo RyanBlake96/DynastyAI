@@ -1,6 +1,7 @@
 import type { SleeperRoster } from '../types';
 import type { ValuesResponse } from '../api/values';
 import { getPlayerValue } from '../hooks/usePlayerValues';
+import { computeOptimalStarters } from './powerRankings';
 
 export type DepthGrade = 'Strong' | 'Adequate' | 'Weak';
 
@@ -11,7 +12,9 @@ export interface PositionalGrade {
   totalValue: number;
   starterValue: number;
   benchValue: number;
-  grade: DepthGrade;
+  starterGrade: DepthGrade;  // percentile-based: how starters rank vs other teams' starters
+  depthGrade: DepthGrade;    // total-value-based: total positional value vs league average
+  grade: DepthGrade;         // backward compat alias for depthGrade
 }
 
 export interface RosterAnalysis {
@@ -20,25 +23,64 @@ export interface RosterAnalysis {
   benchValue: number;
   benchPct: number;
   efficiencyFlags: string[];
-  overallGrade: DepthGrade;
+  overallGrade: DepthGrade;         // based on depth grades
+  overallStarterGrade: DepthGrade;  // based on starter grades
 }
 
-// How many starters a league typically needs per position
-// This is approximate — exact count depends on roster_positions
-function countStarterSlots(rosterPositions: string[]): Record<string, number> {
-  const counts: Record<string, number> = { QB: 0, RB: 0, WR: 0, TE: 0 };
-  for (const slot of rosterPositions) {
-    if (slot === 'BN' || slot === 'IR' || slot === 'TAXI') continue;
-    if (slot === 'QB') counts.QB++;
-    else if (slot === 'RB') counts.RB++;
-    else if (slot === 'WR') counts.WR++;
-    else if (slot === 'TE') counts.TE++;
-    else if (slot === 'FLEX') { counts.RB += 0.33; counts.WR += 0.34; counts.TE += 0.33; }
-    else if (slot === 'SUPER_FLEX') { counts.QB += 0.5; counts.RB += 0.17; counts.WR += 0.17; counts.TE += 0.16; }
-    else if (slot === 'REC_FLEX') { counts.WR += 0.5; counts.TE += 0.5; }
-    else if (slot === 'WRRB_FLEX') { counts.RB += 0.5; counts.WR += 0.5; }
+// Compute league-wide starter values per position (one entry per team).
+// Call once and pass to analyseRoster() to avoid redundant computation.
+export function computeLeagueStarterValues(
+  allRosters: SleeperRoster[],
+  values: ValuesResponse,
+  players: Record<string, any>,
+  rosterPositions: string[],
+): Record<string, number[]> {
+  const positions = ['QB', 'RB', 'WR', 'TE'] as const;
+  const result: Record<string, number[]> = {};
+  for (const pos of positions) result[pos] = [];
+
+  for (const roster of allRosters) {
+    const starters = computeOptimalStarters(roster.players || [], rosterPositions, players, values);
+    const posTotals: Record<string, number> = {};
+    for (const pos of positions) posTotals[pos] = 0;
+
+    for (const pid of starters) {
+      const pos = players[pid]?.position as string;
+      if (posTotals[pos] !== undefined) {
+        posTotals[pos] += getPlayerValue(values, pid);
+      }
+    }
+
+    for (const pos of positions) result[pos].push(posTotals[pos]);
   }
-  return counts;
+
+  return result;
+}
+
+// Grade by percentile rank: top 33% = Strong, middle 33% = Adequate, bottom 33% = Weak
+function gradeByPercentile(value: number, allValues: number[]): DepthGrade {
+  const sorted = [...allValues].sort((a, b) => b - a); // descending
+  const n = sorted.length;
+  if (n === 0) return 'Adequate';
+
+  // Find rank (0-indexed, lower = better)
+  let rank = sorted.findIndex(v => value >= v);
+  if (rank === -1) rank = n; // worst
+
+  const topThreshold = Math.ceil(n / 3);
+  const midThreshold = Math.ceil((n * 2) / 3);
+
+  if (rank < topThreshold) return 'Strong';
+  if (rank < midThreshold) return 'Adequate';
+  return 'Weak';
+}
+
+function computeOverallGrade(grades: DepthGrade[]): DepthGrade {
+  const strongCount = grades.filter(g => g === 'Strong').length;
+  const weakCount = grades.filter(g => g === 'Weak').length;
+  if (weakCount === 0 && strongCount >= 2) return 'Strong';
+  if (weakCount >= 2) return 'Weak';
+  return 'Adequate';
 }
 
 export function analyseRoster(
@@ -47,25 +89,30 @@ export function analyseRoster(
   values: ValuesResponse,
   players: Record<string, any>,
   rosterPositions: string[],
+  leagueStarterValuesByPos?: Record<string, number[]>,
 ): RosterAnalysis {
   const positions = ['QB', 'RB', 'WR', 'TE'] as const;
-  const starterSlotCounts = countStarterSlots(rosterPositions);
 
-  // Gather all players by position with values
-  const byPos: Record<string, { id: string; value: number }[]> = {};
+  // Use computeOptimalStarters for definitive starter identification
+  const optimalStarters = roster.players
+    ? computeOptimalStarters(roster.players, rosterPositions, players, values)
+    : new Set<string>();
+
+  // Gather all players by position with values, split by starter status
+  const byPos: Record<string, { id: string; value: number; isStarter: boolean }[]> = {};
   for (const pos of positions) byPos[pos] = [];
 
   for (const pid of roster.players || []) {
     const pos = players[pid]?.position as string;
     if (byPos[pos]) {
-      byPos[pos].push({ id: pid, value: getPlayerValue(values, pid) });
+      byPos[pos].push({ id: pid, value: getPlayerValue(values, pid), isStarter: optimalStarters.has(pid) });
     }
   }
   for (const pos of positions) {
     byPos[pos].sort((a, b) => b.value - a.value);
   }
 
-  // Compute league-wide averages per position for grading
+  // Compute league-wide totals per position for depth grading (existing logic)
   const leaguePosTotals: Record<string, number[]> = {};
   for (const pos of positions) leaguePosTotals[pos] = [];
 
@@ -86,6 +133,9 @@ export function analyseRoster(
     leaguePosAvg[pos] = vals.length > 0 ? vals.reduce((a, b) => a + b, 0) / vals.length : 0;
   }
 
+  // Compute league-wide starter values for percentile grading
+  const leagueStarters = leagueStarterValuesByPos ?? computeLeagueStarterValues(allRosters, values, players, rosterPositions);
+
   // Build positional grades
   const positionalGrades: PositionalGrade[] = [];
   let totalStarterValue = 0;
@@ -94,9 +144,8 @@ export function analyseRoster(
 
   for (const pos of positions) {
     const group = byPos[pos];
-    const neededStarters = Math.ceil(starterSlotCounts[pos] || 0);
-    const starterGroup = group.slice(0, Math.max(neededStarters, 1));
-    const benchGroup = group.slice(Math.max(neededStarters, 1));
+    const starterGroup = group.filter(p => p.isStarter);
+    const benchGroup = group.filter(p => !p.isStarter);
 
     const starterVal = starterGroup.reduce((s, p) => s + p.value, 0);
     const benchVal = benchGroup.reduce((s, p) => s + p.value, 0);
@@ -105,18 +154,21 @@ export function analyseRoster(
     totalStarterValue += starterVal;
     totalBenchValue += benchVal;
 
-    // Grade based on league average comparison
-    let grade: DepthGrade;
+    // Depth grade: total value vs league average (existing logic)
+    let depthGrade: DepthGrade;
     if (totalVal >= leaguePosAvg[pos] * 1.2) {
-      grade = 'Strong';
+      depthGrade = 'Strong';
     } else if (totalVal >= leaguePosAvg[pos] * 0.8) {
-      grade = 'Adequate';
+      depthGrade = 'Adequate';
     } else {
-      grade = 'Weak';
+      depthGrade = 'Weak';
     }
 
-    // Efficiency flags
-    if (grade === 'Strong' && benchGroup.length >= 3 && benchVal > starterVal * 0.5) {
+    // Starter grade: percentile rank vs other teams' starters at this position
+    const starterGrade = gradeByPercentile(starterVal, leagueStarters[pos] || []);
+
+    // Efficiency flags (use depth grade for surplus detection)
+    if (depthGrade === 'Strong' && benchGroup.length >= 3 && benchVal > starterVal * 0.5) {
       efficiencyFlags.push(`${pos} surplus — significant bench value (${Math.round(benchVal)}) could be traded for needs`);
     }
 
@@ -127,16 +179,18 @@ export function analyseRoster(
       totalValue: Math.round(totalVal),
       starterValue: Math.round(starterVal),
       benchValue: Math.round(benchVal),
-      grade,
+      starterGrade,
+      depthGrade,
+      grade: depthGrade, // backward compat
     });
   }
 
-  // Weak positions with strong surplus elsewhere
-  const weakPositions = positionalGrades.filter(g => g.grade === 'Weak');
-  const strongPositions = positionalGrades.filter(g => g.grade === 'Strong');
-  if (weakPositions.length > 0 && strongPositions.length > 0) {
+  // Efficiency: weak starter positions with strong depth elsewhere
+  const weakStarterPositions = positionalGrades.filter(g => g.starterGrade === 'Weak');
+  const strongDepthPositions = positionalGrades.filter(g => g.depthGrade === 'Strong');
+  if (weakStarterPositions.length > 0 && strongDepthPositions.length > 0) {
     efficiencyFlags.push(
-      `Trade opportunity: ${strongPositions.map(p => p.position).join('/')} depth could address ${weakPositions.map(p => p.position).join('/')} weakness`
+      `Trade opportunity: ${strongDepthPositions.map(p => p.position).join('/')} depth could address ${weakStarterPositions.map(p => p.position).join('/')} starter weakness`
     );
   }
 
@@ -150,17 +204,9 @@ export function analyseRoster(
     efficiencyFlags.push('Thin bench — vulnerable to injuries; consider adding depth');
   }
 
-  // Overall grade
-  const strongCount = positionalGrades.filter(g => g.grade === 'Strong').length;
-  const weakCount = positionalGrades.filter(g => g.grade === 'Weak').length;
-  let overallGrade: DepthGrade;
-  if (weakCount === 0 && strongCount >= 2) {
-    overallGrade = 'Strong';
-  } else if (weakCount >= 2) {
-    overallGrade = 'Weak';
-  } else {
-    overallGrade = 'Adequate';
-  }
+  // Overall grades
+  const overallGrade = computeOverallGrade(positionalGrades.map(g => g.depthGrade));
+  const overallStarterGrade = computeOverallGrade(positionalGrades.map(g => g.starterGrade));
 
   return {
     positionalGrades,
@@ -169,5 +215,6 @@ export function analyseRoster(
     benchPct: Math.round(benchPct * 100),
     efficiencyFlags,
     overallGrade,
+    overallStarterGrade,
   };
 }

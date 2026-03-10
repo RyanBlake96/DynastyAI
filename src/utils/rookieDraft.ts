@@ -115,8 +115,8 @@ export function buildTeamStrategies(
 
     const analysis = analyseRoster(roster, rosters, values, players, rosterPositions);
     const needs = analysis.positionalGrades
-      .filter(g => g.grade === 'Weak' || g.grade === 'Adequate')
-      .map(g => ({ position: g.position, grade: g.grade }))
+      .filter(g => g.starterGrade === 'Weak' || g.starterGrade === 'Adequate')
+      .map(g => ({ position: g.position, grade: g.starterGrade }))
       .sort((a, b) => {
         if (a.grade === 'Weak' && b.grade !== 'Weak') return -1;
         if (a.grade !== 'Weak' && b.grade === 'Weak') return 1;
