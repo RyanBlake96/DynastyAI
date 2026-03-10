@@ -3,7 +3,10 @@ import { Link } from 'react-router-dom';
 import { useLeagueLayout } from '../components/LeagueLayout';
 import { usePlayers } from '../hooks/usePlayers';
 import { usePlayerValues } from '../hooks/usePlayerValues';
-import { computePowerRankings } from '../utils/powerRankings';
+import { computePowerRankings, computeOptimalStarters } from '../utils/powerRankings';
+import { countQbStarterSlots } from '../utils/rosterConstruction';
+import { getPlayerValue } from '../hooks/usePlayerValues';
+import type { ValuesResponse } from '../api/values';
 import { getFormatNotes } from '../utils/formatNotes';
 import { fetchTradedPicks, fetchDrafts, fetchDraftPicks } from '../api/sleeper';
 import { buildDraftOrder, getDraftSlotOrder, buildPickOwnership, computePicksValue, buildRookiePickValueMap, applyRookieValues } from '../utils/draftPicks';
@@ -31,7 +34,7 @@ const tierColors: Record<CompetitiveTier, string> = {
   'Rebuilder': 'bg-red-100 text-red-800 dark:bg-red-900 dark:text-red-300',
 };
 
-type ViewMode = 'standings' | 'power';
+type ViewMode = 'standings' | 'power' | 'positional';
 
 export default function Dashboard() {
   const { data, leagueId } = useLeagueLayout();
@@ -162,6 +165,16 @@ export default function Dashboard() {
               Power Rankings
             </button>
             <button
+              onClick={() => setView('positional')}
+              className={`text-sm px-3 py-1.5 rounded-full border transition-colors ${
+                view === 'positional'
+                  ? 'bg-gray-900 text-white border-gray-900 dark:bg-gray-100 dark:text-gray-900 dark:border-gray-100'
+                  : 'bg-white text-gray-600 border-gray-200 hover:border-gray-400 dark:bg-gray-800 dark:text-gray-300 dark:border-gray-600 dark:hover:border-gray-400'
+              }`}
+            >
+              Positional Rankings
+            </button>
+            <button
               onClick={() => setView('standings')}
               className={`text-sm px-3 py-1.5 rounded-full border transition-colors ${
                 view === 'standings'
@@ -186,6 +199,16 @@ export default function Dashboard() {
             rankingMap={rankingMap}
             pickValueMap={pickValueMap}
             maxValue={maxValue}
+            leagueId={leagueId!}
+          />
+        ) : view === 'positional' && valuesReady && playersReady ? (
+          <PositionalRankingsView
+            rosters={rosters}
+            users={users}
+            players={players!}
+            values={values!}
+            rosterPositions={league.roster_positions || []}
+            rankingMap={rankingMap}
             leagueId={leagueId!}
           />
         ) : (
@@ -344,6 +367,249 @@ function PowerRankingsView({
       {/* Legend */}
       <p className="text-xs text-gray-400 dark:text-gray-500 mt-2">
         Values averaged across KeepTradeCut, FantasyCalc, and DynastyProcess. Pick values are estimated.
+      </p>
+    </div>
+  );
+}
+
+// --- Positional Rankings View ---
+
+type PositionalTab = 'QB' | 'RB' | 'WR' | 'TE';
+
+const POS_TAB_COLORS: Record<PositionalTab, { active: string; dot: string }> = {
+  QB: { active: 'bg-red-500 text-white border-red-500', dot: 'bg-red-400' },
+  RB: { active: 'bg-blue-500 text-white border-blue-500', dot: 'bg-blue-400' },
+  WR: { active: 'bg-green-500 text-white border-green-500', dot: 'bg-green-400' },
+  TE: { active: 'bg-orange-500 text-white border-orange-500', dot: 'bg-orange-400' },
+};
+
+const GRADE_BG: Record<string, string> = {
+  Strong: 'bg-green-100 text-green-800 dark:bg-green-900/50 dark:text-green-300',
+  Adequate: 'bg-yellow-100 text-yellow-800 dark:bg-yellow-900/50 dark:text-yellow-300',
+  Weak: 'bg-red-100 text-red-800 dark:bg-red-900/50 dark:text-red-300',
+};
+
+interface TeamPositionalData {
+  rosterId: number;
+  teamName: string;
+  starters: { id: string; name: string; team: string; age: number; value: number }[];
+  bench: { id: string; name: string; team: string; age: number; value: number }[];
+  starterValue: number;
+  benchValue: number;
+  totalValue: number;
+  starterGrade: 'Strong' | 'Adequate' | 'Weak';
+}
+
+function PositionalRankingsView({
+  rosters,
+  users,
+  players,
+  values,
+  rosterPositions,
+  rankingMap,
+  leagueId,
+}: {
+  rosters: SleeperRoster[];
+  users: SleeperUser[];
+  players: Record<string, any>;
+  values: ValuesResponse;
+  rosterPositions: string[];
+  rankingMap: Map<number, RosterRanking>;
+  leagueId: string;
+}) {
+  const [activePos, setActivePos] = useState<PositionalTab>('QB');
+
+  const teamData = useMemo(() => {
+    const positions: PositionalTab[] = ['QB', 'RB', 'WR', 'TE'];
+    const qbSlots = countQbStarterSlots(rosterPositions);
+    const result: Record<PositionalTab, TeamPositionalData[]> = { QB: [], RB: [], WR: [], TE: [] };
+
+    // Compute optimal starters for each roster
+    const rosterStarters = new Map<number, Set<string>>();
+    for (const roster of rosters) {
+      const starters = roster.players
+        ? computeOptimalStarters(roster.players, rosterPositions, players, values)
+        : new Set<string>();
+      rosterStarters.set(roster.roster_id, starters);
+    }
+
+    // Build per-position data for each team
+    for (const pos of positions) {
+      const teamsAtPos: TeamPositionalData[] = [];
+
+      for (const roster of rosters) {
+        const optimalStarters = rosterStarters.get(roster.roster_id)!;
+        const allPlayers = (roster.players || [])
+          .filter(pid => players[pid]?.position === pos)
+          .map(pid => ({
+            id: pid,
+            name: players[pid]?.full_name || players[pid]?.first_name + ' ' + players[pid]?.last_name || pid,
+            team: players[pid]?.team || '',
+            age: players[pid]?.age || 0,
+            value: getPlayerValue(values, pid),
+            isStarter: pos === 'QB' ? false : optimalStarters.has(pid), // QB handled below
+          }))
+          .sort((a, b) => b.value - a.value);
+
+        // QB: top N by value are starters
+        if (pos === 'QB') {
+          allPlayers.forEach((p, i) => { p.isStarter = i < qbSlots; });
+        }
+
+        const starters = allPlayers.filter(p => p.isStarter);
+        const bench = allPlayers.filter(p => !p.isStarter);
+        const starterValue = starters.reduce((s, p) => s + p.value, 0);
+        const benchValue = bench.reduce((s, p) => s + p.value, 0);
+
+        teamsAtPos.push({
+          rosterId: roster.roster_id,
+          teamName: getUserName(roster, users),
+          starters,
+          bench,
+          starterValue,
+          benchValue,
+          totalValue: starterValue + benchValue,
+          starterGrade: 'Adequate', // computed below
+        });
+      }
+
+      // Compute starter grades by percentile
+      const starterValues = teamsAtPos.map(t => t.starterValue).sort((a, b) => b - a);
+      const n = starterValues.length;
+      const topThreshold = Math.ceil(n / 3);
+      const midThreshold = Math.ceil((n * 2) / 3);
+
+      for (const team of teamsAtPos) {
+        let rank = starterValues.findIndex(v => team.starterValue >= v);
+        if (rank === -1) rank = n;
+        if (rank < topThreshold) team.starterGrade = 'Strong';
+        else if (rank < midThreshold) team.starterGrade = 'Adequate';
+        else team.starterGrade = 'Weak';
+      }
+
+      // Sort by starter value descending
+      teamsAtPos.sort((a, b) => b.starterValue - a.starterValue);
+      result[pos] = teamsAtPos;
+    }
+
+    return result;
+  }, [rosters, users, players, values, rosterPositions]);
+
+  const teamsForPos = teamData[activePos];
+  const maxStarterValue = teamsForPos.length > 0 ? teamsForPos[0].starterValue : 1;
+
+  return (
+    <div>
+      {/* Position tabs */}
+      <div className="flex gap-2 mb-4">
+        {(['QB', 'RB', 'WR', 'TE'] as PositionalTab[]).map(pos => (
+          <button
+            key={pos}
+            onClick={() => setActivePos(pos)}
+            className={`text-sm px-4 py-1.5 rounded-full border transition-colors font-medium ${
+              activePos === pos
+                ? POS_TAB_COLORS[pos].active
+                : 'bg-white text-gray-600 border-gray-200 hover:border-gray-400 dark:bg-gray-800 dark:text-gray-300 dark:border-gray-600 dark:hover:border-gray-400'
+            }`}
+          >
+            {pos}
+          </button>
+        ))}
+      </div>
+
+      {/* Team cards */}
+      <div className="space-y-3">
+        {teamsForPos.map((team, idx) => {
+          const ranking = rankingMap.get(team.rosterId);
+          const barWidth = maxStarterValue > 0 ? (team.starterValue / maxStarterValue) * 100 : 0;
+
+          return (
+            <div
+              key={team.rosterId}
+              className="bg-white dark:bg-gray-800 rounded-lg border border-gray-200 dark:border-gray-700 p-4"
+            >
+              {/* Header row */}
+              <div className="flex items-center justify-between mb-2">
+                <div className="flex items-center gap-3">
+                  <span className="text-lg font-bold text-gray-300 dark:text-gray-600 w-8">
+                    {idx + 1}
+                  </span>
+                  <Link
+                    to={`/league/${leagueId}/team/${team.rosterId}`}
+                    className="font-semibold text-gray-900 dark:text-gray-100 hover:text-blue-600 dark:hover:text-blue-400"
+                  >
+                    {team.teamName}
+                  </Link>
+                  <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${GRADE_BG[team.starterGrade]}`}>
+                    {team.starterGrade}
+                  </span>
+                  {ranking && (
+                    <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${tierColors[ranking.tier]}`}>
+                      {ranking.tier}
+                    </span>
+                  )}
+                </div>
+                <div className="flex items-center gap-4 text-sm">
+                  <span className="text-gray-700 dark:text-gray-300 font-semibold">{formatValue(team.starterValue)}</span>
+                  <span className="text-gray-400 dark:text-gray-500 text-xs">Bench: {formatValue(team.benchValue)}</span>
+                </div>
+              </div>
+
+              {/* Starter value bar */}
+              <div className="h-2 bg-gray-100 dark:bg-gray-700 rounded-full overflow-hidden mb-3">
+                <div
+                  className={`h-full rounded-full ${POS_TAB_COLORS[activePos].dot}`}
+                  style={{ width: `${barWidth}%` }}
+                />
+              </div>
+
+              {/* Starters */}
+              <div className="mb-2">
+                <p className="text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wide mb-1">Starters</p>
+                <div className="flex flex-wrap gap-2">
+                  {team.starters.map(p => (
+                    <Link
+                      key={p.id}
+                      to={`/league/${leagueId}/player/${p.id}`}
+                      className="flex items-center gap-1.5 bg-gray-50 dark:bg-gray-700 rounded-lg px-2.5 py-1.5 hover:bg-gray-100 dark:hover:bg-gray-600 transition-colors"
+                    >
+                      <span className="text-sm font-medium text-gray-900 dark:text-gray-100">{p.name}</span>
+                      {p.team && <span className="text-xs text-gray-400 dark:text-gray-500">{p.team}</span>}
+                      {p.age > 0 && <span className="text-xs text-gray-400 dark:text-gray-500">({p.age})</span>}
+                      <span className="text-xs font-semibold text-gray-600 dark:text-gray-300">{formatValue(p.value)}</span>
+                    </Link>
+                  ))}
+                  {team.starters.length === 0 && (
+                    <span className="text-xs text-gray-400 dark:text-gray-500 italic">No starters</span>
+                  )}
+                </div>
+              </div>
+
+              {/* Bench */}
+              {team.bench.length > 0 && (
+                <div>
+                  <p className="text-xs font-medium text-gray-400 dark:text-gray-500 uppercase tracking-wide mb-1">Bench</p>
+                  <div className="flex flex-wrap gap-1.5">
+                    {team.bench.map(p => (
+                      <Link
+                        key={p.id}
+                        to={`/league/${leagueId}/player/${p.id}`}
+                        className="flex items-center gap-1 text-xs text-gray-500 dark:text-gray-400 hover:text-blue-600 dark:hover:text-blue-400 bg-gray-50/50 dark:bg-gray-700/50 rounded px-2 py-1"
+                      >
+                        <span>{p.name}</span>
+                        <span className="text-gray-400 dark:text-gray-500">{formatValue(p.value)}</span>
+                      </Link>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </div>
+          );
+        })}
+      </div>
+
+      <p className="text-xs text-gray-400 dark:text-gray-500 mt-2">
+        Teams ranked by starting lineup value at {activePos}. Grades based on league-wide percentile (top 33% = Strong, middle = Adequate, bottom = Weak).
       </p>
     </div>
   );

@@ -28,7 +28,7 @@ export interface RosterAnalysis {
 }
 
 // Count how many QBs a team should start: 1 for 1QB leagues, 2 for SF
-function countQbStarterSlots(rosterPositions: string[]): number {
+export function countQbStarterSlots(rosterPositions: string[]): number {
   let count = 0;
   for (const slot of rosterPositions) {
     if (slot === 'QB') count++;
