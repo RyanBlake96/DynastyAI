@@ -27,6 +27,16 @@ export interface RosterAnalysis {
   overallStarterGrade: DepthGrade;  // based on starter grades
 }
 
+// Count how many QBs a team should start: 1 for 1QB leagues, 2 for SF
+function countQbStarterSlots(rosterPositions: string[]): number {
+  let count = 0;
+  for (const slot of rosterPositions) {
+    if (slot === 'QB') count++;
+    else if (slot === 'SUPER_FLEX') count++;
+  }
+  return Math.max(count, 1);
+}
+
 // Compute league-wide starter values per position (one entry per team).
 // Call once and pass to analyseRoster() to avoid redundant computation.
 export function computeLeagueStarterValues(
@@ -36,6 +46,7 @@ export function computeLeagueStarterValues(
   rosterPositions: string[],
 ): Record<string, number[]> {
   const positions = ['QB', 'RB', 'WR', 'TE'] as const;
+  const qbSlots = countQbStarterSlots(rosterPositions);
   const result: Record<string, number[]> = {};
   for (const pos of positions) result[pos] = [];
 
@@ -50,6 +61,13 @@ export function computeLeagueStarterValues(
         posTotals[pos] += getPlayerValue(values, pid);
       }
     }
+
+    // QB: override with sum of top N QBs by value (N = QB + SF slots)
+    const allQbs = (roster.players || [])
+      .filter(pid => players[pid]?.position === 'QB')
+      .map(pid => getPlayerValue(values, pid))
+      .sort((a, b) => b - a);
+    posTotals.QB = allQbs.slice(0, qbSlots).reduce((s, v) => s + v, 0);
 
     for (const pos of positions) result[pos].push(posTotals[pos]);
   }
@@ -92,6 +110,7 @@ export function analyseRoster(
   leagueStarterValuesByPos?: Record<string, number[]>,
 ): RosterAnalysis {
   const positions = ['QB', 'RB', 'WR', 'TE'] as const;
+  const qbSlots = countQbStarterSlots(rosterPositions);
 
   // Use computeOptimalStarters for definitive starter identification
   const optimalStarters = roster.players
@@ -110,6 +129,11 @@ export function analyseRoster(
   }
   for (const pos of positions) {
     byPos[pos].sort((a, b) => b.value - a.value);
+  }
+
+  // QB starters: simply use top N QBs by value (N = QB + SF slots)
+  for (let i = 0; i < byPos.QB.length; i++) {
+    byPos.QB[i].isStarter = i < qbSlots;
   }
 
   // Compute league-wide totals per position for depth grading (existing logic)
