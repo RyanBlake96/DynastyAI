@@ -491,7 +491,7 @@ function RosterAnalysisCard({
       )}
 
       {/* Rebuilder Pick Suggestions */}
-      {tradeTargetResult && tradeTargetResult.rebuilderPickSuggestions.length > 0 && tradeTargetResult.recommendations.length === 0 && (
+      {tradeTargetResult && tradeTargetResult.rebuilderPickSuggestions.length > 0 && (
         <div className="border-t border-gray-100 dark:border-gray-700 pt-3 mb-3">
           <p className="text-xs text-gray-400 dark:text-gray-500 uppercase tracking-wide font-medium mb-2">
             Sell for Picks
