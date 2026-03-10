@@ -2,7 +2,7 @@ import type { SleeperRoster, SleeperUser, CompetitiveTier } from '../types';
 import type { ValuesResponse } from '../api/values';
 import type { RosterRanking } from './powerRankings';
 import type { DepthGrade, RosterAnalysis } from './rosterConstruction';
-import { analyseRoster } from './rosterConstruction';
+import { analyseRoster, computeLeagueStarterValues } from './rosterConstruction';
 import { getPlayerValue } from '../hooks/usePlayerValues';
 import { computeRecommendation } from './recommendations';
 import { buildRookiePickValueMap } from './draftPicks';
@@ -13,7 +13,10 @@ import { buildRookieRankings } from './rookieDraft';
 export interface PositionalGradeSnapshot {
   position: string;
   totalValue: number;
-  grade: DepthGrade;
+  starterValue: number;
+  starterGrade: DepthGrade;
+  depthGrade: DepthGrade;
+  grade: DepthGrade; // backward compat alias for depthGrade
 }
 
 export interface TradeTargetAsset {
@@ -99,7 +102,10 @@ function snapshotGrades(analysis: RosterAnalysis): PositionalGradeSnapshot[] {
   return analysis.positionalGrades.map(g => ({
     position: g.position,
     totalValue: g.totalValue,
-    grade: g.grade,
+    starterValue: g.starterValue,
+    starterGrade: g.starterGrade,
+    depthGrade: g.depthGrade,
+    grade: g.depthGrade,
   }));
 }
 
@@ -563,22 +569,23 @@ function computeAcceptability(
   values: ValuesResponse,
   players: Record<string, any>,
   rosterPositions: string[],
+  leagueStarterValuesByPos?: Record<string, number[]>,
 ): { score: number; reasons: string[]; beforeGrades: PositionalGradeSnapshot[]; afterGrades: PositionalGradeSnapshot[] } {
   if (!targetTeamProfile) {
     return { score: 0, reasons: [], beforeGrades: [], afterGrades: [] };
   }
 
-  const theirBeforeAnalysis = analyseRoster(targetTeamProfile.roster, rosters, values, players, rosterPositions);
+  const theirBeforeAnalysis = analyseRoster(targetTeamProfile.roster, rosters, values, players, rosterPositions, leagueStarterValuesByPos);
   const theirBeforeGrades = snapshotGrades(theirBeforeAnalysis);
 
   // Simulate: target team loses receivePlayerIds, gains givePlayerIds
   const theirSimRoster = simulateRoster(targetTeamProfile.roster, receivePlayerIds, givePlayerIds);
-  const theirAfterAnalysis = analyseRoster(theirSimRoster, rosters, values, players, rosterPositions);
+  const theirAfterAnalysis = analyseRoster(theirSimRoster, rosters, values, players, rosterPositions, leagueStarterValuesByPos);
   const theirAfterGrades = snapshotGrades(theirAfterAnalysis);
 
-  // Score: net grade changes + net value changes
+  // Score: starter grade changes (primary, 2x weight) + depth grade changes (secondary, 1x)
   let netGradeChange = 0;
-  let netValueChange = 0;
+  let netStarterValueChange = 0;
   const reasons: string[] = [];
   const upgrades: string[] = [];
   const downgrades: string[] = [];
@@ -586,17 +593,28 @@ function computeAcceptability(
   for (let i = 0; i < theirAfterGrades.length; i++) {
     const before = theirBeforeGrades[i];
     const after = theirAfterGrades[i];
-    const gradeDelta = gradeNumeric(after.grade) - gradeNumeric(before.grade);
-    const valueDelta = after.totalValue - before.totalValue;
-    netGradeChange += gradeDelta;
-    netValueChange += valueDelta;
 
-    if (gradeDelta > 0) {
-      upgrades.push(`${after.position} upgrades from ${before.grade} to ${after.grade}`);
-    } else if (gradeDelta < 0) {
-      downgrades.push(`${after.position} drops from ${before.grade} to ${after.grade}`);
-    } else if (before.grade === 'Weak' && valueDelta > 0) {
-      upgrades.push(`${after.position} depth improves (still ${after.grade})`);
+    // Primary: starter grade change (weighted 2x)
+    const starterGradeDelta = gradeNumeric(after.starterGrade) - gradeNumeric(before.starterGrade);
+    // Secondary: depth grade change (weighted 1x)
+    const depthGradeDelta = gradeNumeric(after.depthGrade) - gradeNumeric(before.depthGrade);
+    netGradeChange += starterGradeDelta * 2 + depthGradeDelta;
+    netStarterValueChange += after.starterValue - before.starterValue;
+
+    // Reason generation uses starter grades as primary
+    if (starterGradeDelta > 0) {
+      upgrades.push(`${after.position} starters upgrade from ${before.starterGrade} to ${after.starterGrade}`);
+    } else if (starterGradeDelta < 0) {
+      downgrades.push(`${after.position} starters drop from ${before.starterGrade} to ${after.starterGrade}`);
+    } else if (before.starterGrade === 'Weak' && (after.starterValue - before.starterValue) > 0) {
+      upgrades.push(`${after.position} starter value improves (still ${after.starterGrade})`);
+    }
+
+    // Note depth changes only when different from starter change
+    if (depthGradeDelta > 0 && depthGradeDelta !== starterGradeDelta) {
+      upgrades.push(`${after.position} depth improves`);
+    } else if (depthGradeDelta < 0 && depthGradeDelta !== starterGradeDelta) {
+      downgrades.push(`${after.position} depth weakens`);
     }
   }
 
@@ -610,7 +628,6 @@ function computeAcceptability(
 
   // Tier-context reasons
   const tier = targetTeamProfile.tier;
-  // Figure out what positions they're receiving (givePlayerIds = what we give = what they receive)
   const receivingPositions = new Set<string>();
   for (const pid of givePlayerIds) {
     const p = players[pid];
@@ -623,23 +640,21 @@ function computeAcceptability(
   }
 
   if (tier === 'Strong Contender' || tier === 'Contender') {
-    // Contenders care about filling weak spots for a championship push
     for (const pos of receivingPositions) {
       const beforeGrade = theirBeforeGrades.find(g => g.position === pos);
-      if (beforeGrade && beforeGrade.grade === 'Weak') {
-        reasons.push(`Fills their ${pos} weakness — key for a contender`);
+      if (beforeGrade && beforeGrade.starterGrade === 'Weak') {
+        reasons.push(`Fills their ${pos} starter weakness — key for a contender`);
       }
     }
     for (const pos of losingPositions) {
       const beforeGrade = theirBeforeGrades.find(g => g.position === pos);
-      if (beforeGrade && beforeGrade.grade === 'Strong') {
+      if (beforeGrade && beforeGrade.depthGrade === 'Strong') {
         reasons.push(`They have ${pos} depth to spare`);
-      } else if (beforeGrade && beforeGrade.grade !== 'Strong') {
-        reasons.push(`Losing ${pos} depth hurts their championship push`);
+      } else if (beforeGrade && beforeGrade.starterGrade !== 'Strong') {
+        reasons.push(`Losing ${pos} starter strength hurts their championship push`);
       }
     }
   } else if (tier === 'Rebuilder') {
-    // Rebuilders want younger players and future value
     for (const pid of givePlayerIds) {
       const p = players[pid];
       if (p && p.age && p.age <= 24) {
@@ -654,17 +669,15 @@ function computeAcceptability(
     }
   }
 
-  // Value balance reason
-  if (netValueChange > 500) {
-    reasons.push(`They gain ${Math.round(netValueChange).toLocaleString()} in total roster value`);
-  } else if (netValueChange < -500) {
-    reasons.push(`They lose ${Math.round(Math.abs(netValueChange)).toLocaleString()} in total roster value`);
+  // Value balance reason (starter-focused)
+  if (netStarterValueChange > 500) {
+    reasons.push(`They gain ${Math.round(netStarterValueChange).toLocaleString()} in starter value`);
+  } else if (netStarterValueChange < -500) {
+    reasons.push(`They lose ${Math.round(Math.abs(netStarterValueChange)).toLocaleString()} in starter value`);
   }
 
-  // Deduplicate
   const uniqueReasons = [...new Set(reasons)];
-
-  const score = netGradeChange * 1000 + netValueChange / 10;
+  const score = netGradeChange * 1000 + netStarterValueChange / 10;
   return { score, reasons: uniqueReasons, beforeGrades: theirBeforeGrades, afterGrades: theirAfterGrades };
 }
 
@@ -681,6 +694,7 @@ function buildRecommendation(
   values: ValuesResponse,
   players: Record<string, any>,
   rosterPositions: string[],
+  leagueStarterValuesByPos?: Record<string, number[]>,
 ): TradeRecommendation | null {
   const targetTeamProfile = profiles.find(p => p.rosterId === target.teamRosterId);
 
@@ -691,43 +705,46 @@ function buildRecommendation(
   const giveIds = pkg.give.map(a => a.id);
   const receiveIds = [target.id, ...pkg.receive.map(a => a.id)];
   const simRoster = simulateRoster(myProfile.roster, giveIds, receiveIds);
-  const afterAnalysis = analyseRoster(simRoster, rosters, values, players, rosterPositions);
+  const afterAnalysis = analyseRoster(simRoster, rosters, values, players, rosterPositions, leagueStarterValuesByPos);
   const afterGrades = snapshotGrades(afterAnalysis);
 
-  // Validate: contenders/fringe shouldn't drop a non-target position from Adequate to Weak
+  // Validate: contenders/fringe shouldn't drop a non-target position's starters to Weak
   if (myProfile.tier !== 'Rebuilder') {
     const hasDroppedPosition = afterGrades.some((ag, idx) => {
       const bg = beforeGrades[idx];
       return ag.position !== need.position &&
-        bg.grade !== 'Weak' && ag.grade === 'Weak';
+        bg.starterGrade !== 'Weak' && ag.starterGrade === 'Weak';
     });
     if (hasDroppedPosition) return null;
   }
 
-  // Score the trade
+  // Score the trade — starter grades are primary signal
   const beforeGrade = beforeGrades.find(g => g.position === need.position)!;
   const afterGrade = afterGrades.find(g => g.position === need.position)!;
-  const gradeImprovement = gradeNumeric(afterGrade.grade) - gradeNumeric(beforeGrade.grade);
-  const valueGain = afterGrade.totalValue - beforeGrade.totalValue;
+  const starterGradeImprovement = gradeNumeric(afterGrade.starterGrade) - gradeNumeric(beforeGrade.starterGrade);
+  const depthGradeImprovement = gradeNumeric(afterGrade.depthGrade) - gradeNumeric(beforeGrade.depthGrade);
+  const starterValueGain = afterGrade.starterValue - beforeGrade.starterValue;
 
   let penalty = 0;
   for (let i = 0; i < afterGrades.length; i++) {
     if (afterGrades[i].position === need.position) continue;
-    const drop = gradeNumeric(beforeGrades[i].grade) - gradeNumeric(afterGrades[i].grade);
-    if (drop > 0) penalty += drop;
+    const starterDrop = gradeNumeric(beforeGrades[i].starterGrade) - gradeNumeric(afterGrades[i].starterGrade);
+    if (starterDrop > 0) penalty += starterDrop * 2;
+    const depthDrop = gradeNumeric(beforeGrades[i].depthGrade) - gradeNumeric(afterGrades[i].depthGrade);
+    if (depthDrop > 0) penalty += depthDrop;
   }
 
-  const improvementScore = gradeImprovement * 1000 + valueGain / 10 - penalty * 500;
+  const improvementScore = starterGradeImprovement * 1500 + depthGradeImprovement * 500 + starterValueGain / 10 - penalty * 500;
 
   const giveTotal = pkg.give.reduce((s, a) => s + a.value, 0);
   const receiveTotal = target.value + pkg.receive.reduce((s, a) => s + a.value, 0);
   const differencePct = computeDiffPct(giveTotal, receiveTotal);
 
-  // Build explanation
+  // Build explanation — reference starter grades
   const surplusNames = [...new Set(pkg.give.map(a => a.position))].join('/');
-  const gradeChangeText = beforeGrade.grade === afterGrade.grade
-    ? `maintaining ${afterGrade.grade} grade but adding ${Math.round(valueGain).toLocaleString()} value`
-    : `upgrading ${need.position} from ${beforeGrade.grade} to ${afterGrade.grade}`;
+  const gradeChangeText = beforeGrade.starterGrade === afterGrade.starterGrade
+    ? `maintaining ${afterGrade.starterGrade} starters but adding ${Math.round(starterValueGain).toLocaleString()} starter value`
+    : `upgrading ${need.position} starters from ${beforeGrade.starterGrade} to ${afterGrade.starterGrade}`;
 
   const receiveNames = [target.name, ...pkg.receive.map(a => a.name)].join(' + ');
   const explanation = need.kind === 'upgrade'
@@ -757,7 +774,7 @@ function buildRecommendation(
 
   // Compute acceptability from the other team's perspective
   const acceptability = computeAcceptability(
-    targetTeamProfile, giveIds, receiveIds, rosters, values, players, rosterPositions,
+    targetTeamProfile, giveIds, receiveIds, rosters, values, players, rosterPositions, leagueStarterValuesByPos,
   );
 
   return {
@@ -806,9 +823,10 @@ function buildRebuilderTradeRecommendations(
   players: Record<string, any>,
   rosters: SleeperRoster[],
   rosterPositions: string[],
+  leagueStarterValuesByPos?: Record<string, number[]>,
 ): TradeRecommendation[] {
   const recommendations: TradeRecommendation[] = [];
-  const beforeAnalysis = analyseRoster(myProfile.roster, rosters, values, players, rosterPositions);
+  const beforeAnalysis = analyseRoster(myProfile.roster, rosters, values, players, rosterPositions, leagueStarterValuesByPos);
   const beforeGrades = snapshotGrades(beforeAnalysis);
 
   // Find sell candidates: players with Trade/Sell recommendations
@@ -847,16 +865,16 @@ function buildRebuilderTradeRecommendations(
       if (contenderProfile.rosterId === myProfile.rosterId) continue;
       if (contenderProfile.tier !== 'Strong Contender' && contenderProfile.tier !== 'Contender' && contenderProfile.tier !== 'Fringe Playoff') continue;
 
-      // Check if contender needs this position
-      const contenderAnalysis = analyseRoster(contenderProfile.roster, rosters, values, players, rosterPositions);
+      // Check if contender needs this position (use starterGrade for need detection)
+      const contenderAnalysis = analyseRoster(contenderProfile.roster, rosters, values, players, rosterPositions, leagueStarterValuesByPos);
       const posGrade = contenderAnalysis.positionalGrades.find(g => g.position === sellPlayer.position);
-      if (!posGrade || posGrade.grade === 'Strong') continue;
+      if (!posGrade || posGrade.starterGrade === 'Strong') continue;
 
       // Find young bench players from contender's surplus positions
       const contenderGiveOptions: PlayerInfo[] = [];
       for (const pos of ['QB', 'RB', 'WR', 'TE']) {
         const contenderPosGrade = contenderAnalysis.positionalGrades.find(g => g.position === pos);
-        if (!contenderPosGrade || contenderPosGrade.grade === 'Weak') continue;
+        if (!contenderPosGrade || contenderPosGrade.starterGrade === 'Weak') continue;
 
         for (const cp of contenderProfile.playersByPos[pos] || []) {
           if (cp.isStarter) continue;
@@ -877,7 +895,7 @@ function buildRebuilderTradeRecommendations(
         const pct = computeDiffPct(targetValue, youngP.value);
         if (pct <= MAX_DIFF_PCT) {
           const simRoster = simulateRoster(myProfile.roster, [sellPlayer.id], [youngP.id]);
-          const afterAnalysis = analyseRoster(simRoster, rosters, values, players, rosterPositions);
+          const afterAnalysis = analyseRoster(simRoster, rosters, values, players, rosterPositions, leagueStarterValuesByPos);
           const afterGrades = snapshotGrades(afterAnalysis);
 
           const decline = POS_DECLINE_AGE[sellPlayer.position] ?? 30;
@@ -887,7 +905,7 @@ function buildRebuilderTradeRecommendations(
 
           // Acceptability: contender loses youngP, gains sellPlayer
           const acceptability = computeAcceptability(
-            contenderProfile, [sellPlayer.id], [youngP.id], rosters, values, players, rosterPositions,
+            contenderProfile, [sellPlayer.id], [youngP.id], rosters, values, players, rosterPositions, leagueStarterValuesByPos,
           );
 
           recommendations.push({
@@ -937,7 +955,7 @@ function buildRebuilderTradeRecommendations(
             const pct = computeDiffPct(targetValue, total);
             if (pct <= MAX_DIFF_PCT) {
               const simRoster = simulateRoster(myProfile.roster, [sellPlayer.id], [p1.id, p2.id]);
-              const afterAnalysis = analyseRoster(simRoster, rosters, values, players, rosterPositions);
+              const afterAnalysis = analyseRoster(simRoster, rosters, values, players, rosterPositions, leagueStarterValuesByPos);
               const afterGrades = snapshotGrades(afterAnalysis);
 
               const decline = POS_DECLINE_AGE[sellPlayer.position] ?? 30;
@@ -947,7 +965,7 @@ function buildRebuilderTradeRecommendations(
 
               // Acceptability: contender loses p1+p2, gains sellPlayer
               const acceptability2 = computeAcceptability(
-                contenderProfile, [sellPlayer.id], [p1.id, p2.id], rosters, values, players, rosterPositions,
+                contenderProfile, [sellPlayer.id], [p1.id, p2.id], rosters, values, players, rosterPositions, leagueStarterValuesByPos,
               );
 
               recommendations.push({
@@ -1076,39 +1094,42 @@ export function findTradeTargets(
     return { rosterId: targetRosterId, teamName: '', tier: 'Rebuilder', needs: [], recommendations: [], rebuilderPickSuggestions: [] };
   }
 
+  // Precompute league-wide starter values once for all analyseRoster() calls
+  const leagueStarterValues = computeLeagueStarterValues(rosters, values, players, rosterPositions);
+
   // Get current roster analysis
-  const beforeAnalysis = analyseRoster(myProfile.roster, rosters, values, players, rosterPositions);
+  const beforeAnalysis = analyseRoster(myProfile.roster, rosters, values, players, rosterPositions, leagueStarterValues);
   const beforeGrades = snapshotGrades(beforeAnalysis);
 
-  // --- Identify needs ---
+  // --- Identify needs (using starter grades as primary signal) ---
   const needs: TradeTargetNeed[] = [];
-  const weakPositions = beforeAnalysis.positionalGrades.filter(g => g.grade === 'Weak');
+  const weakPositions = beforeAnalysis.positionalGrades.filter(g => g.starterGrade === 'Weak');
   const adequatePositions = beforeAnalysis.positionalGrades
-    .filter(g => g.grade === 'Adequate')
-    .sort((a, b) => a.totalValue - b.totalValue);
+    .filter(g => g.starterGrade === 'Adequate')
+    .sort((a, b) => a.starterValue - b.starterValue);
 
   for (const g of weakPositions) {
-    needs.push({ position: g.position, grade: g.grade, kind: 'need' });
+    needs.push({ position: g.position, grade: g.starterGrade, kind: 'need' });
   }
 
   // Add weakest Adequate position(s) as secondary needs
   if (adequatePositions.length > 0) {
-    needs.push({ position: adequatePositions[0].position, grade: adequatePositions[0].grade, kind: 'need' });
+    needs.push({ position: adequatePositions[0].position, grade: adequatePositions[0].starterGrade, kind: 'need' });
     if (adequatePositions.length > 1 && weakPositions.length === 0) {
-      needs.push({ position: adequatePositions[1].position, grade: adequatePositions[1].grade, kind: 'need' });
+      needs.push({ position: adequatePositions[1].position, grade: adequatePositions[1].starterGrade, kind: 'need' });
     }
   }
 
   // Fallback for all-Strong teams: use weakest Strong positions as upgrade targets
   if (needs.length === 0) {
     const strongPositions = beforeAnalysis.positionalGrades
-      .filter(g => g.grade === 'Strong')
-      .sort((a, b) => a.totalValue - b.totalValue);
+      .filter(g => g.starterGrade === 'Strong')
+      .sort((a, b) => a.starterValue - b.starterValue);
 
     if (strongPositions.length > 0) {
-      needs.push({ position: strongPositions[0].position, grade: strongPositions[0].grade, kind: 'upgrade' });
+      needs.push({ position: strongPositions[0].position, grade: strongPositions[0].starterGrade, kind: 'upgrade' });
       if (strongPositions.length > 1) {
-        needs.push({ position: strongPositions[1].position, grade: strongPositions[1].grade, kind: 'upgrade' });
+        needs.push({ position: strongPositions[1].position, grade: strongPositions[1].starterGrade, kind: 'upgrade' });
       }
     }
   }
@@ -1131,7 +1152,7 @@ export function findTradeTargets(
   if (myProfile.tier === 'Rebuilder') {
     // Rebuilders: construct trades selling aging assets to contenders
     const rebuilderRecs = buildRebuilderTradeRecommendations(
-      myProfile, profiles, values, players, rosters, rosterPositions,
+      myProfile, profiles, values, players, rosters, rosterPositions, leagueStarterValues,
     );
     recommendations.push(...rebuilderRecs);
   }
@@ -1146,7 +1167,7 @@ export function findTradeTargets(
 
       const rec = buildRecommendation(
         target, need, myProfile, profiles, tradablePlayers,
-        beforeGrades, rosters, values, players, rosterPositions,
+        beforeGrades, rosters, values, players, rosterPositions, leagueStarterValues,
       );
 
       if (rec) recommendations.push(rec);
@@ -1158,15 +1179,15 @@ export function findTradeTargets(
     const existingNeedPositions = new Set(needs.map(n => n.position));
     const remainingPositions = beforeAnalysis.positionalGrades
       .filter(g => !existingNeedPositions.has(g.position))
-      .sort((a, b) => a.totalValue - b.totalValue);
+      .sort((a, b) => a.starterValue - b.starterValue);
 
     for (const extra of remainingPositions) {
       if (recommendations.length >= 5) break;
 
       const extraNeed: TradeTargetNeed = {
         position: extra.position,
-        grade: extra.grade,
-        kind: extra.grade === 'Strong' ? 'upgrade' : 'need',
+        grade: extra.starterGrade,
+        kind: extra.starterGrade === 'Strong' ? 'upgrade' : 'need',
       };
       const targetCandidates = findTargetPlayers(extra.position, myProfile, profiles);
 
@@ -1175,7 +1196,7 @@ export function findTradeTargets(
 
         const rec = buildRecommendation(
           target, extraNeed, myProfile, profiles, tradablePlayers,
-          beforeGrades, rosters, values, players, rosterPositions,
+          beforeGrades, rosters, values, players, rosterPositions, leagueStarterValues,
         );
 
         if (rec) {

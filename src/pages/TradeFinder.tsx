@@ -680,30 +680,40 @@ function BeforeAfterGrid({ before, after, targetPosition }: {
         {before.map((bg, i) => {
           const ag = after[i];
           const isTarget = bg.position === targetPosition;
-          const changed = bg.grade !== ag.grade;
+          const starterChanged = bg.starterGrade !== ag.starterGrade;
+          const depthChanged = bg.depthGrade !== ag.depthGrade;
           return (
             <div key={bg.position} className={`rounded p-2 ${isTarget ? 'ring-2 ring-blue-400' : ''}`}>
               <p className="text-xs font-semibold text-gray-700 dark:text-gray-300 mb-1">{bg.position}</p>
+              {/* Starter grade — primary */}
               <div className="flex items-center justify-center gap-1">
-                <span className={`text-xs rounded px-1 py-0.5 ${GRADE_BADGE_COLORS[bg.grade]}`}>{bg.grade}</span>
-                {changed && (
+                <span className={`text-xs rounded px-1 py-0.5 ${GRADE_BADGE_COLORS[bg.starterGrade]}`}>{bg.starterGrade}</span>
+                {starterChanged && (
                   <>
                     <span className="text-xs text-gray-400">→</span>
-                    <span className={`text-xs rounded px-1 py-0.5 ${GRADE_BADGE_COLORS[ag.grade]}`}>{ag.grade}</span>
+                    <span className={`text-xs rounded px-1 py-0.5 ${GRADE_BADGE_COLORS[ag.starterGrade]}`}>{ag.starterGrade}</span>
                   </>
                 )}
               </div>
-              <div className="flex items-center justify-center gap-1 mt-1">
-                <span className="text-xs text-gray-400 dark:text-gray-500">{formatValue(bg.totalValue)}</span>
-                {bg.totalValue !== ag.totalValue && (
+              <p className="text-[10px] text-gray-400 dark:text-gray-500 mt-0.5">Starters</p>
+              {/* Starter value delta */}
+              <div className="flex items-center justify-center gap-1 mt-0.5">
+                <span className="text-xs text-gray-400 dark:text-gray-500">{formatValue(bg.starterValue)}</span>
+                {bg.starterValue !== ag.starterValue && (
                   <>
                     <span className="text-xs text-gray-400">→</span>
-                    <span className={`text-xs font-medium ${ag.totalValue > bg.totalValue ? 'text-green-600 dark:text-green-400' : 'text-red-600 dark:text-red-400'}`}>
-                      {formatValue(ag.totalValue)}
+                    <span className={`text-xs font-medium ${ag.starterValue > bg.starterValue ? 'text-green-600 dark:text-green-400' : 'text-red-600 dark:text-red-400'}`}>
+                      {formatValue(ag.starterValue)}
                     </span>
                   </>
                 )}
               </div>
+              {/* Depth grade — secondary, only when different from starter change */}
+              {depthChanged && (
+                <div className="flex items-center justify-center gap-1 mt-1 opacity-60">
+                  <span className="text-[10px]">{bg.depthGrade} → {ag.depthGrade}</span>
+                </div>
+              )}
             </div>
           );
         })}

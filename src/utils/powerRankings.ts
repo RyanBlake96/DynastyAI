@@ -36,7 +36,7 @@ const SLOT_ELIGIBLE: Record<string, string[]> = {
 };
 
 // Compute optimal starting lineup by greedily filling the most restrictive slots first
-function computeOptimalStarters(
+export function computeOptimalStarters(
   rosterPlayers: string[],
   rosterPositions: string[],
   players: Record<string, any>,

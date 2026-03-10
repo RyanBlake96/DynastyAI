@@ -390,9 +390,14 @@ function RosterAnalysisCard({
             </span>
           )}
         </div>
-        <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${GRADE_COLORS[analysis.overallGrade]}`}>
-          {analysis.overallGrade}
-        </span>
+        <div className="flex gap-2">
+          <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${GRADE_COLORS[analysis.overallStarterGrade]}`}>
+            Starters: {analysis.overallStarterGrade}
+          </span>
+          <span className={`text-xs px-2 py-0.5 rounded-full font-medium opacity-70 ${GRADE_COLORS[analysis.overallGrade]}`}>
+            Depth: {analysis.overallGrade}
+          </span>
+        </div>
       </div>
 
       {/* Starter / Bench split */}
@@ -411,25 +416,44 @@ function RosterAnalysisCard({
         </div>
       </div>
 
-      {/* Positional depth grades */}
-      <div className="space-y-2 mb-4">
+      {/* Positional grades: starter + depth */}
+      <div className="space-y-3 mb-4">
         {analysis.positionalGrades.map((pg) => {
-          const maxVal = Math.max(...analysis.positionalGrades.map(g => g.totalValue), 1);
-          const pct = (pg.totalValue / maxVal) * 100;
+          const maxVal = Math.max(...analysis.positionalGrades.map(g => Math.max(g.totalValue, g.starterValue)), 1);
+          const starterPct = (pg.starterValue / maxVal) * 100;
+          const totalPct = (pg.totalValue / maxVal) * 100;
           return (
-            <div key={pg.position} className="flex items-center gap-3">
-              <span className="text-xs font-semibold text-gray-500 dark:text-gray-400 w-6">{pg.position}</span>
-              <div className="flex-1 h-5 bg-gray-100 dark:bg-gray-700 rounded-full overflow-hidden">
-                <div
-                  className={`h-full rounded-full ${POS_BAR_COLORS[pg.position] || 'bg-gray-400 dark:bg-gray-500'}`}
-                  style={{ width: `${Math.max(pct, 4)}%` }}
-                />
+            <div key={pg.position} className="space-y-0.5">
+              {/* Starter grade row — prominent */}
+              <div className="flex items-center gap-3">
+                <span className="text-xs font-semibold text-gray-500 dark:text-gray-400 w-6">{pg.position}</span>
+                <div className="flex-1 h-4 bg-gray-100 dark:bg-gray-700 rounded-full overflow-hidden">
+                  <div
+                    className={`h-full rounded-full ${POS_BAR_COLORS[pg.position] || 'bg-gray-400 dark:bg-gray-500'}`}
+                    style={{ width: `${Math.max(starterPct, 4)}%` }}
+                  />
+                </div>
+                <span className="text-xs text-gray-500 dark:text-gray-400 w-12 text-right">{formatVal(pg.starterValue)}</span>
+                <span className={`text-xs px-1.5 py-0.5 rounded font-medium ${GRADE_COLORS[pg.starterGrade]}`}>
+                  {pg.starterGrade}
+                </span>
+                <span className="text-xs text-gray-400 dark:text-gray-500 w-10 text-right">Start</span>
               </div>
-              <span className="text-xs text-gray-500 dark:text-gray-400 w-12 text-right">{formatVal(pg.totalValue)}</span>
-              <span className={`text-xs px-1.5 py-0.5 rounded font-medium ${GRADE_COLORS[pg.grade]}`}>
-                {pg.grade}
-              </span>
-              <span className="text-xs text-gray-400 dark:text-gray-500 w-16 text-right">{pg.count} players</span>
+              {/* Depth grade row — subdued */}
+              <div className="flex items-center gap-3">
+                <span className="w-6" />
+                <div className="flex-1 h-2 bg-gray-100 dark:bg-gray-700 rounded-full overflow-hidden">
+                  <div
+                    className={`h-full rounded-full opacity-40 ${POS_BAR_COLORS[pg.position] || 'bg-gray-400 dark:bg-gray-500'}`}
+                    style={{ width: `${Math.max(totalPct, 4)}%` }}
+                  />
+                </div>
+                <span className="text-xs text-gray-400 dark:text-gray-500 w-12 text-right">{formatVal(pg.totalValue)}</span>
+                <span className={`text-xs px-1 py-0.5 rounded font-medium opacity-60 ${GRADE_COLORS[pg.depthGrade]}`}>
+                  {pg.depthGrade}
+                </span>
+                <span className="text-xs text-gray-400 dark:text-gray-500 w-10 text-right">Depth</span>
+              </div>
             </div>
           );
         })}
@@ -558,16 +582,16 @@ function CompactTradeTargetCard({ rec, leagueId }: { rec: TradeRecommendation; l
       </div>
       {targetPosGradeBefore && targetPosGradeAfter && (
         <div className="flex items-center gap-1 text-xs mb-1">
-          <span className="text-gray-500 dark:text-gray-400">{rec.targetPlayer.position}:</span>
-          <span className={`rounded px-1 py-0.5 ${GRADE_COLORS[targetPosGradeBefore.grade]}`}>{targetPosGradeBefore.grade}</span>
-          {targetPosGradeBefore.grade !== targetPosGradeAfter.grade && (
+          <span className="text-gray-500 dark:text-gray-400">{rec.targetPlayer.position} starters:</span>
+          <span className={`rounded px-1 py-0.5 ${GRADE_COLORS[targetPosGradeBefore.starterGrade]}`}>{targetPosGradeBefore.starterGrade}</span>
+          {targetPosGradeBefore.starterGrade !== targetPosGradeAfter.starterGrade && (
             <>
               <span className="text-gray-400">→</span>
-              <span className={`rounded px-1 py-0.5 ${GRADE_COLORS[targetPosGradeAfter.grade]}`}>{targetPosGradeAfter.grade}</span>
+              <span className={`rounded px-1 py-0.5 ${GRADE_COLORS[targetPosGradeAfter.starterGrade]}`}>{targetPosGradeAfter.starterGrade}</span>
             </>
           )}
           <span className="text-gray-400 dark:text-gray-500">
-            ({formatVal(targetPosGradeBefore.totalValue)} → {formatVal(targetPosGradeAfter.totalValue)})
+            ({formatVal(targetPosGradeBefore.starterValue)} → {formatVal(targetPosGradeAfter.starterValue)})
           </span>
         </div>
       )}
@@ -594,19 +618,23 @@ function CompactTradeTargetCard({ rec, leagueId }: { rec: TradeRecommendation; l
           <div className="grid grid-cols-4 gap-1 text-center">
             {rec.beforeGrades.map((bg, idx) => {
               const ag = rec.afterGrades[idx];
-              const changed = bg.grade !== ag.grade;
+              const starterChanged = bg.starterGrade !== ag.starterGrade;
+              const depthChanged = bg.depthGrade !== ag.depthGrade;
               return (
                 <div key={bg.position} className={`rounded p-1 ${bg.position === rec.targetPlayer.position ? 'ring-1 ring-blue-400' : ''}`}>
                   <p className="text-xs font-semibold text-gray-600 dark:text-gray-400">{bg.position}</p>
                   <div className="flex items-center justify-center gap-0.5">
-                    <span className={`text-xs rounded px-1 py-0.5 ${GRADE_COLORS[bg.grade]}`}>{bg.grade[0]}</span>
-                    {changed && (
+                    <span className={`text-xs rounded px-1 py-0.5 ${GRADE_COLORS[bg.starterGrade]}`}>{bg.starterGrade[0]}</span>
+                    {starterChanged && (
                       <>
                         <span className="text-xs text-gray-400">→</span>
-                        <span className={`text-xs rounded px-1 py-0.5 ${GRADE_COLORS[ag.grade]}`}>{ag.grade[0]}</span>
+                        <span className={`text-xs rounded px-1 py-0.5 ${GRADE_COLORS[ag.starterGrade]}`}>{ag.starterGrade[0]}</span>
                       </>
                     )}
                   </div>
+                  {depthChanged && depthChanged !== starterChanged && (
+                    <p className="text-[10px] text-gray-400 mt-0.5 opacity-60">{bg.depthGrade[0]}→{ag.depthGrade[0]}</p>
+                  )}
                 </div>
               );
             })}
@@ -641,25 +669,25 @@ function buildTierInsights(
   const insights: TierInsight[] = [];
 
   if (tier === 'Strong Contender' || tier === 'Contender') {
-    // Identify weakest positions
+    // Identify weakest starting lineup positions
     const weakPositions = analysis.positionalGrades
-      .filter(g => g.grade === 'Weak')
-      .sort((a, b) => a.totalValue - b.totalValue);
+      .filter(g => g.starterGrade === 'Weak')
+      .sort((a, b) => a.starterValue - b.starterValue);
 
     if (weakPositions.length > 0) {
       for (const wp of weakPositions) {
         insights.push({
           type: 'need',
-          message: `${wp.position} is your weakest position (${formatVal(wp.totalValue)}, graded Weak) — prioritise acquiring a ${wp.position} to strengthen your contending roster.`,
+          message: `${wp.position} starters are your weakest position (${formatVal(wp.starterValue)}, graded Weak) — prioritise acquiring a ${wp.position} to strengthen your contending roster.`,
         });
       }
     } else {
-      // Even if no "Weak" grades, highlight the lowest-graded position
-      const sorted = [...analysis.positionalGrades].sort((a, b) => a.totalValue - b.totalValue);
-      if (sorted.length > 0 && sorted[0].grade === 'Adequate') {
+      // Even if no "Weak" starter grades, highlight the lowest-graded position
+      const sorted = [...analysis.positionalGrades].sort((a, b) => a.starterValue - b.starterValue);
+      if (sorted.length > 0 && sorted[0].starterGrade === 'Adequate') {
         insights.push({
           type: 'need',
-          message: `${sorted[0].position} is your thinnest position (${formatVal(sorted[0].totalValue)}) — an upgrade here could put you over the top.`,
+          message: `${sorted[0].position} starters are your thinnest position (${formatVal(sorted[0].starterValue)}) — an upgrade here could put you over the top.`,
         });
       }
     }
@@ -754,12 +782,12 @@ function buildTierInsights(
       });
     }
   } else if (tier === 'Fringe Playoff') {
-    // For fringe teams, highlight weakest position and any sell window opportunities
-    const weakest = [...analysis.positionalGrades].sort((a, b) => a.totalValue - b.totalValue)[0];
+    // For fringe teams, highlight weakest starting position
+    const weakest = [...analysis.positionalGrades].sort((a, b) => a.starterValue - b.starterValue)[0];
     if (weakest) {
       insights.push({
         type: 'need',
-        message: `${weakest.position} is your weakest group (${formatVal(weakest.totalValue)}) — strengthening here could push you into contention.`,
+        message: `${weakest.position} starters are your weakest group (${formatVal(weakest.starterValue)}) — strengthening here could push you into contention.`,
       });
     }
   }
