@@ -101,14 +101,37 @@ export default function Landing() {
       }
 
       setDisplayName(user.display_name || user.username);
-      const userLeagues = await fetchLeaguesByUserId(user.user_id);
-      const dynastyLeagues = userLeagues.filter(
+
+      // Fetch both current and previous season leagues in parallel
+      // (some leagues may not have rolled over to the new season yet)
+      const [currentLeagues, prevLeagues] = await Promise.all([
+        fetchLeaguesByUserId(user.user_id),
+        fetchLeaguesByUserId(user.user_id, 'nfl', '2025'),
+      ]);
+
+      // Merge: prefer current season, add previous season leagues not already present
+      const leagueMap = new Map<string, SleeperLeague>();
+      for (const l of currentLeagues) {
+        leagueMap.set(l.league_id, l);
+      }
+      for (const l of prevLeagues) {
+        // If a league rolled over, Sleeper changes the league_id.
+        // Use previous_league_id on current-season leagues to detect duplicates.
+        const alreadyRolledOver = currentLeagues.some(
+          (cl) => cl.previous_league_id === l.league_id,
+        );
+        if (!alreadyRolledOver && !leagueMap.has(l.league_id)) {
+          leagueMap.set(l.league_id, l);
+        }
+      }
+
+      const dynastyLeagues = Array.from(leagueMap.values()).filter(
         (l) => l.settings && l.settings.type === 2,
       );
 
       if (dynastyLeagues.length === 0) {
         setStatus('error');
-        setError('No dynasty leagues found for this user in the current season.');
+        setError('No dynasty leagues found for this user.');
         return;
       }
 
