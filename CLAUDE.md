@@ -667,6 +667,21 @@ Factors: player age + trajectory, team tier, positional need, injury history, co
 - None
 **Tomorrow:** Phase 4 remaining items or Phase 6
 
+### Day 16 — 2026-03-10
+**Status:** Complete
+**Completed:**
+- Fixed off-season league visibility: app was only fetching current season (2026) leagues from Sleeper, missing leagues that hadn't rolled over yet
+  - Landing page now fetches both 2025 and 2026 season leagues in parallel via `Promise.all`
+  - Merges results with deduplication: uses `previous_league_id` on 2026 leagues to detect rolled-over 2025 leagues
+  - 2025-only leagues (not yet rolled over) now appear in the league selector
+- Added `previous_league_id` field to `SleeperLeague` type (Sleeper API returns this on all league objects)
+- Updated error message from "No dynasty leagues found for this user in the current season" to "No dynasty leagues found for this user"
+- Pushed to GitHub: commit 98948fc
+**Issues:**
+- Vercel deploy blocked by OneDrive filesystem timeouts (ETIMEDOUT on cloud-only files after laptop restart) — need to ensure files are available offline or run `npm install` to regenerate node_modules
+- Production deploy pending
+**Tomorrow:** Deploy to production, Phase 6 or Phase 7
+
 <!--
   UPDATE THIS LOG AT THE END OF EVERY SESSION.
   Copy the template below for each new day:
@@ -688,6 +703,16 @@ Factors: player age + trajectory, team tier, positional need, injury history, co
 - Name matching across sources may miss edge cases (unusual spellings, suffixes like Jr./III)
 - Total serverless functions: 7 of 12 Hobby plan limit (user, league, players, state, values, cron, news/player)
 - Cron function has 60s maxDuration — fetches Sleeper player DB (~10MB) + 3 external sources sequentially
+
+---
+
+## Git Workflow
+- **At the start of every session**, create a new branch from `main` before making any changes:
+  - Branch naming: `<type>/<short-description>` (e.g. `feat/matchups-display`, `fix/dark-mode-table`, `refactor/shared-hooks`)
+  - Types: `feat`, `fix`, `refactor`, `chore`, `docs`
+- Commit early and often on the feature branch
+- When work is complete, push the branch and create a PR to merge into `main`
+- Deploy to production from `main` after merging
 
 ---
 
@@ -784,3 +809,5 @@ Factors: player age + trajectory, team tier, positional need, injury history, co
 - Pick trade suggestions are tier-driven: contenders advised to sell late picks or package up for needs; rebuilders advised to acquire first-rounders; fringe teams advised to consolidate surplus picks. Suggestions are qualitative guidance, not specific trade proposals.
 - Pick value estimation in rookie draft uses same PICK_VALUES table as tradeEvaluator.ts — static values by round (R1: 4500-7500, R2: 2000-4000, etc.) with early/mid/late tiers based on pick position within the round (thirds of total teams).
 - Rookie Draft page (src/pages/RookieDraft.tsx): two-tab interface (Draft Strategy default, Rookie Rankings). Strategy tab has team selector dropdown and expandable cards. Rankings tab has position filter pills. Route: `/league/:leagueId/draft`.
+- Off-season league fetching: Landing page fetches both current season and 2025 season leagues in parallel, merges with deduplication using `previous_league_id` to avoid showing the same league twice when it has already rolled over. This ensures leagues still in their 2025 season are visible during the off-season transition period.
+- Sleeper `previous_league_id`: every league object includes this field, pointing to the prior season's league_id (or null for first-season leagues). Used for deduplication when merging multi-season league lists.
