@@ -1,5 +1,5 @@
 import { useState, useMemo, useEffect } from 'react';
-import { Link } from 'react-router-dom';
+import { Link, useSearchParams } from 'react-router-dom';
 import { useLeagueLayout } from '../components/LeagueLayout';
 import { usePlayers } from '../hooks/usePlayers';
 import { usePlayerValues } from '../hooks/usePlayerValues';
@@ -56,7 +56,12 @@ export default function TradeFinder() {
   const { data, leagueId } = useLeagueLayout();
   const { players, status: playersStatus } = usePlayers();
   const { values, status: valuesStatus } = usePlayerValues(data.leagueType);
-  const [view, setView] = useState<TabView>('finder');
+  const [searchParams] = useSearchParams();
+  const initialTab = searchParams.get('tab');
+  const initialTeam = searchParams.get('team');
+  const [view, setView] = useState<TabView>(
+    initialTab && ['finder', 'evaluator', 'history', 'targets'].includes(initialTab) ? initialTab as TabView : 'finder'
+  );
   const [teamFilter, setTeamFilter] = useState<number | null>(null);
   const [transactions, setTransactions] = useState<SleeperTransaction[]>([]);
   const [txStatus, setTxStatus] = useState<'loading' | 'ready' | 'error'>('idle' as any);
@@ -179,6 +184,7 @@ export default function TradeFinder() {
           rosterPositions={league.roster_positions}
           leagueId={leagueId}
           sortedRosters={sortedRosters}
+          initialTeam={initialTeam ? Number(initialTeam) : null}
         />
       )}
 
@@ -417,7 +423,7 @@ function GradedTradeCard({
 // --- Trade Targets View ---
 
 function TradeTargetsView({
-  rosters, users, rankings, values, players, rosterPositions, leagueId, sortedRosters,
+  rosters, users, rankings, values, players, rosterPositions, leagueId, sortedRosters, initialTeam,
 }: {
   rosters: SleeperRoster[];
   users: SleeperUser[];
@@ -427,8 +433,9 @@ function TradeTargetsView({
   rosterPositions: string[];
   leagueId: string;
   sortedRosters: SleeperRoster[];
+  initialTeam: number | null;
 }) {
-  const [selectedTeam, setSelectedTeam] = useState<number | null>(null);
+  const [selectedTeam, setSelectedTeam] = useState<number | null>(initialTeam);
 
   const result: TradeTargetResult | null = useMemo(() => {
     if (selectedTeam === null || rankings.length === 0) return null;
@@ -554,13 +561,22 @@ function TradeTargetCard({ rec, leagueId, rank }: { rec: TradeRecommendation; le
             {rec.targetPlayer.age ? `Age ${rec.targetPlayer.age}` : ''} · {formatValue(rec.targetPlayer.value)}
           </span>
         </div>
-        <span className={`text-xs font-medium rounded px-2 py-0.5 ${
-          rec.fairnessGrade === 'Even' ? 'bg-green-100 text-green-700 dark:bg-green-900/40 dark:text-green-400' :
-          rec.fairnessGrade === 'Slight Edge' ? 'bg-yellow-100 text-yellow-700 dark:bg-yellow-900/40 dark:text-yellow-400' :
-          'bg-orange-100 text-orange-700 dark:bg-orange-900/40 dark:text-orange-400'
-        }`}>
-          {rec.fairnessGrade}
-        </span>
+        <div className="flex items-center gap-1.5">
+          <span className={`text-xs font-medium rounded px-2 py-0.5 ${
+            rec.acceptabilityScore > 500 ? 'bg-green-100 text-green-700 dark:bg-green-900/40 dark:text-green-400' :
+            rec.acceptabilityScore > 0 ? 'bg-yellow-100 text-yellow-700 dark:bg-yellow-900/40 dark:text-yellow-400' :
+            'bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-400'
+          }`}>
+            {rec.acceptabilityScore > 500 ? 'Likely Accept' : rec.acceptabilityScore > 0 ? 'Possible' : 'Unlikely'}
+          </span>
+          <span className={`text-xs font-medium rounded px-2 py-0.5 ${
+            rec.fairnessGrade === 'Even' ? 'bg-green-100 text-green-700 dark:bg-green-900/40 dark:text-green-400' :
+            rec.fairnessGrade === 'Slight Edge' ? 'bg-yellow-100 text-yellow-700 dark:bg-yellow-900/40 dark:text-yellow-400' :
+            'bg-orange-100 text-orange-700 dark:bg-orange-900/40 dark:text-orange-400'
+          }`}>
+            {rec.fairnessGrade}
+          </span>
+        </div>
       </div>
 
       {/* Explanation */}
@@ -614,15 +630,23 @@ function TradeTargetCard({ rec, leagueId, rank }: { rec: TradeRecommendation; le
       </button>
 
       {expanded && (
-        <BeforeAfterGrid before={rec.beforeGrades} after={rec.afterGrades} targetPosition={rec.targetPlayer.position} />
+        <div className="space-y-3">
+          <div>
+            <p className="text-xs font-medium text-gray-500 dark:text-gray-400 mb-1">Your roster impact:</p>
+            <BeforeAfterGrid before={rec.beforeGrades} after={rec.afterGrades} targetPosition={rec.targetPlayer.position} />
+          </div>
+          {rec.otherTeamImpact.beforeGrades.length > 0 && (
+            <div>
+              <p className="text-xs font-medium text-gray-500 dark:text-gray-400 mb-1">{rec.targetTeam.teamName}'s impact:</p>
+              <BeforeAfterGrid before={rec.otherTeamImpact.beforeGrades} after={rec.otherTeamImpact.afterGrades} targetPosition={rec.targetPlayer.position} />
+            </div>
+          )}
+        </div>
       )}
 
       {/* Value balance footer */}
       <div className="flex items-center justify-between text-xs text-gray-400 dark:text-gray-500 border-t border-gray-100 dark:border-gray-700 pt-2">
         <span>Value difference: {formatValue(Math.abs(rec.giveTotal - rec.receiveTotal))} ({rec.differencePct}%)</span>
-        <span className="text-gray-500 dark:text-gray-400">
-          Improvement score: {Math.round(rec.improvementScore).toLocaleString()}
-        </span>
       </div>
     </div>
   );
