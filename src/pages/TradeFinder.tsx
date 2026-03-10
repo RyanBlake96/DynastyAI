@@ -470,10 +470,16 @@ function TradeTargetsView({
             </div>
             {result.needs.length > 0 ? (
               <div className="flex flex-wrap gap-2">
-                <span className="text-xs text-gray-500 dark:text-gray-400">Needs:</span>
+                <span className="text-xs text-gray-500 dark:text-gray-400">
+                  {result.needs.some(n => n.kind === 'need') ? 'Needs:' : 'Upgrade targets:'}
+                </span>
                 {result.needs.map(n => (
-                  <span key={n.position} className={`text-xs rounded px-1.5 py-0.5 ${GRADE_BADGE_COLORS[n.grade]}`}>
-                    {n.position} ({n.grade})
+                  <span key={n.position} className={`text-xs rounded px-1.5 py-0.5 ${
+                    n.kind === 'upgrade'
+                      ? 'bg-indigo-100 text-indigo-700 dark:bg-indigo-900/40 dark:text-indigo-400'
+                      : GRADE_BADGE_COLORS[n.grade]
+                  }`}>
+                    {n.position} ({n.kind === 'upgrade' ? 'Upgrade' : n.grade})
                   </span>
                 ))}
               </div>
@@ -518,15 +524,9 @@ function TradeTargetsView({
             </div>
           )}
 
-          {result.recommendations.length === 0 && result.rebuilderPickSuggestions.length === 0 && result.needs.length > 0 && (
+          {result.recommendations.length === 0 && result.rebuilderPickSuggestions.length === 0 && (
             <p className="text-sm text-gray-500 dark:text-gray-400 py-4 text-center">
-              No viable trade packages found — your surplus depth may not be sufficient to construct balanced trades.
-            </p>
-          )}
-
-          {result.needs.length === 0 && result.recommendations.length === 0 && result.rebuilderPickSuggestions.length === 0 && (
-            <p className="text-sm text-gray-500 dark:text-gray-400 py-4 text-center">
-              This team has no significant weaknesses — no trade targets to suggest.
+              No viable trade packages found — your roster depth may not be sufficient to construct balanced trades.
             </p>
           )}
         </div>
